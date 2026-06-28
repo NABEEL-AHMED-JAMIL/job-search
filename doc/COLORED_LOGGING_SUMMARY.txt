@@ -1,0 +1,177 @@
+COLORED LOGGING - IMPLEMENTATION COMPLETE
+==========================================
+
+✅ All Kafka listener files have been updated with colored logging.
+
+WHAT WAS CHANGED:
+================
+
+1. ✓ etl/main/run_all_listeners.py
+   - Added: import colorlog
+   - Replaced: logging.basicConfig() with ColoredFormatter
+   - Result: ALL messages now colored (main runner)
+
+2. ✓ etl/tpd/tpd_test_listener.py
+   - Added: import colorlog
+   - Replaced: logging.basicConfig() with ColoredFormatter
+   - Result: Test listener messages now colored
+
+3. ✓ etl/tpd/tpd_truck_listener.py
+   - Added: import colorlog
+   - Replaced: logging.basicConfig() with ColoredFormatter
+   - Result: Truck listener messages now colored
+
+4. ✓ etl/tpd/tpd_scrapping_listener.py
+   - Added: import colorlog
+   - Replaced: logging.basicConfig() with ColoredFormatter
+   - Result: Scrapping listener messages now colored
+
+5. ✓ requirements.txt
+   - Added: colorlog==6.8.0
+
+
+COLOR MAPPING:
+==============
+
+Log Level    | Color            | Use Case
+─────────────┼──────────────────┼──────────────────────────
+INFO         | WHITE            | Normal operations
+ERROR        | RED              | Error conditions
+WARNING      | YELLOW           | Warning messages
+DEBUG        | CYAN             | Debug information
+CRITICAL     | RED + BG WHITE   | Critical failures
+
+
+BEFORE vs AFTER:
+================
+
+BEFORE (Plain Text):
+───────────────────
+2026-06-06 16:00:00,123 - __main__ - INFO - Connecting to Kafka broker
+2026-06-06 16:00:01,456 - __main__ - ERROR - Connection timeout
+
+AFTER (Colored):
+────────────────
+2026-06-06 16:00:00,123 - __main__ - INFO - Connecting to Kafka broker     [WHITE]
+2026-06-06 16:00:01,456 - __main__ - ERROR - Connection timeout             [RED]
+
+
+HOW TO RUN:
+===========
+
+Option 1: All Listeners with Colored Output
+────────────────────────────────────────────
+cd /Users/nabeel.amd93/Desktop/Old-School/job-search
+python -m etl.main.run_all_listeners
+
+Option 2: Individual Listeners with Colored Output
+───────────────────────────────────────────────────
+python -m etl.tpd.tpd_test_listener
+python -m etl.tpd.tpd_truck_listener
+python -m etl.tpd.tpd_scrapping_listener
+
+
+DEPENDENCIES:
+==============
+
+Required: colorlog==6.8.0
+Status: ✓ Already installed in your environment
+
+Verify with:
+  pip list | grep colorlog
+
+
+TERMINAL SUPPORT:
+==================
+
+✓ macOS (your system) - Fully supported
+✓ Linux - Fully supported
+✓ Windows 10+ - Fully supported
+✓ Most modern terminal emulators
+
+
+CUSTOMIZATION:
+===============
+
+To change colors, edit the log_colors dictionary in any file:
+
+Example (in listener file):
+  log_colors={
+      'DEBUG': 'cyan',          # Change to: black, red, green, yellow, blue, purple, cyan, white
+      'INFO': 'white',          # Change to: any of the above
+      'WARNING': 'yellow',      # Add backgrounds: 'red,bg_white'
+      'ERROR': 'red',
+      'CRITICAL': 'red,bg_white',
+  }
+
+Available colors:
+  Basic: black, red, green, yellow, blue, purple, cyan, white
+  Backgrounds: bg_black, bg_red, bg_green, bg_yellow, bg_blue, bg_purple, bg_cyan, bg_white
+  Combined: 'color,bg_color' (e.g., 'red,bg_white')
+
+
+EXPECTED OUTPUT EXAMPLE:
+========================
+
+When running the listeners, you should see:
+
+[WHITE]      2026-06-06 16:05:00,000 - __main__ - INFO - Connecting to Kafka broker...
+[WHITE]      2026-06-06 16:05:00,100 - kafka.conn - INFO - <BrokerConnection...>: Connection complete
+[WHITE]      2026-06-06 16:05:00,200 - __main__ - INFO - Successfully connected to Kafka
+[WHITE]      2026-06-06 16:05:01,000 - __main__ - INFO - Received message from test-topic: {"data": "value"}
+[YELLOW]     2026-06-06 16:05:02,000 - __main__ - WARNING - Empty message received
+[RED]        2026-06-06 16:05:03,000 - __main__ - ERROR - Error processing message: something went wrong
+
+
+TROUBLESHOOTING:
+================
+
+Problem: Colors not showing up
+Solution:
+  1. Verify terminal supports ANSI colors
+  2. Check if colorlog is installed: pip list | grep colorlog
+  3. Restart terminal/Python session
+
+Problem: Text is still plain
+Solution:
+  1. Verify colorlog==6.8.0 is in requirements.txt
+  2. Run: pip install colorlog==6.8.0
+  3. Restart Python process
+
+Problem: Colors look different than expected
+Solution:
+  1. Different terminals render colors differently
+  2. Check terminal color theme settings
+  3. This doesn't affect functionality
+
+
+FILES MODIFIED SUMMARY:
+=======================
+
+Updated 4 Python files:
+  etl/main/run_all_listeners.py        ← Colored runner
+  etl/tpd/tpd_test_listener.py         ← Colored listener
+  etl/tpd/tpd_truck_listener.py        ← Colored listener
+  etl/tpd/tpd_scrapping_listener.py    ← Colored listener
+
+Updated 1 config file:
+  requirements.txt                      ← Added colorlog==6.8.0
+
+
+STATUS: ✅ COMPLETE & TESTED
+=============================
+
+All listeners are now outputting:
+  ✓ WHITE text for INFO messages
+  ✓ RED text for ERROR messages
+  ✓ YELLOW text for WARNING messages
+  ✓ CYAN text for DEBUG messages
+
+Ready to run: python -m etl.main.run_all_listeners
+
+
+DOCUMENTATION:
+===============
+
+See COLORED_LOGGING.md for detailed technical information
+

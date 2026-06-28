@@ -1,0 +1,129 @@
+GRACEFUL SHUTDOWN - QUICK REFERENCE
+===================================
+
+✅ NO MORE UGLY ERROR TRACEBACKS!
+
+WHAT CHANGED:
+=============
+
+Updated all 3 listener files with graceful error handling:
+  ✓ etl/tpd/tpd_test_listener.py
+  ✓ etl/tpd/tpd_truck_listener.py
+  ✓ etl/tpd/tpd_scrapping_listener.py
+
+BEFORE vs AFTER:
+================
+
+BEFORE (Ugly - 20+ lines of traceback):
+  Traceback (most recent call last):
+    File ".../tpd_test_listener.py", line 105, in <module>
+      start_test_listener()
+    [... 15+ more lines ...]
+  KeyboardInterrupt
+
+AFTER (Clean - 2 lines):
+  [WHITE] INFO - Listener stopped by user (Ctrl+C)
+  [WHITE] INFO - Test listener closed successfully
+
+IMPROVEMENTS:
+=============
+
+1. ✅ Ctrl+C is caught cleanly
+   - No traceback shown
+   - Logs: "Listener stopped by user (Ctrl+C)"
+
+2. ✅ Kafka connection loss handled gracefully
+   - Logs: "Error in test listener: ..."
+   - Logs: "Attempting to reconnect..."
+   - No ugly traceback
+
+3. ✅ Safe consumer shutdown
+   - Always closes properly
+   - Catches close errors
+   - Logs status message
+
+4. ✅ Message processing errors don't crash listener
+   - Error is logged
+   - Listener continues
+   - Next message is processed
+
+ERROR HANDLING:
+===============
+
+Scenario 1: User presses Ctrl+C
+  → Logs: "Listener stopped by user (Ctrl+C)"
+  → Clean shutdown, no traceback
+
+Scenario 2: Kafka broker stops
+  → Logs: "Error in test listener: ..."
+  → Logs: "Attempting to reconnect..."
+  → Attempts to reconnect
+
+Scenario 3: Message processing fails
+  → Logs: "Error processing test message: ..."
+  → Listener continues listening
+  → Processes next message
+
+Scenario 4: Closing consumer fails
+  → Logs: "Error closing consumer: ..."
+  → Still cleans up properly
+
+USAGE:
+======
+
+Run listeners as usual:
+  python -m etl.main.run_all_listeners
+
+Stop gracefully:
+  Press: Ctrl+C
+
+See clean output:
+  [WHITE] INFO - Listener stopped by user (Ctrl+C)
+  [WHITE] INFO - Test listener closed successfully
+
+No ugly traceback!
+
+CODE CHANGES SUMMARY:
+====================
+
+Added 3 new exception handlers:
+
+1. KeyboardInterrupt handler:
+   except KeyboardInterrupt:
+       logger.info("Listener stopped by user (Ctrl+C)")
+
+2. Better error logging:
+   except Exception as e:
+       logger.error(f"Error: {str(e)}", exc_info=False)
+       logger.warning("Attempting to reconnect...")
+
+3. Safe shutdown:
+   finally:
+       if consumer:
+           try:
+               consumer.close()
+               logger.info("Listener closed successfully")
+           except Exception as close_err:
+               logger.warning(f"Error closing: {str(close_err)}")
+
+KEY FEATURE:
+============
+
+exc_info=False suppresses the full traceback
+while still logging the error message.
+
+This gives you debugging info without the noise!
+
+STATUS:
+=======
+
+✅ All 3 listeners updated
+✅ Graceful Ctrl+C handling
+✅ No ugly tracebacks
+✅ Professional output
+✅ Ready to use
+
+---
+
+Enjoy clean, professional shutdown! 🎉
+

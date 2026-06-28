@@ -1,0 +1,90 @@
+╔════════════════════════════════════════════════════════╗
+║        KAFKA LISTENERS - COLORED LOGGING GUIDE         ║
+╚════════════════════════════════════════════════════════╝
+
+🎨 COLORS APPLIED:
+═══════════════════════════════════════════════════════════
+
+  Message Type    Color     Example
+  ────────────────────────────────────────────────────────
+  INFO            WHITE     "Connected to Kafka"
+  ERROR           RED       "Connection failed"
+  WARNING         YELLOW    "Empty message received"
+  DEBUG           CYAN      "Debug information"
+  CRITICAL        RED BG    "Critical system error"
+
+
+🚀 QUICK START:
+═══════════════════════════════════════════════════════════
+
+  cd /Users/nabeel.amd93/Desktop/Old-School/job-search
+  python -m etl.main.run_all_listeners
+
+
+📝 WHAT CHANGED:
+═══════════════════════════════════════════════════════════
+
+  Updated 4 Python files with colorlog:
+    ✓ etl/main/run_all_listeners.py
+    ✓ etl/tpd/tpd_test_listener.py
+    ✓ etl/tpd/tpd_truck_listener.py
+    ✓ etl/tpd/tpd_scrapping_listener.py
+
+  Updated requirements.txt:
+    ✓ Added colorlog==6.8.0
+
+
+📦 DEPENDENCIES:
+═══════════════════════════════════════════════════════════
+
+  colorlog==6.8.0  ← Already installed
+
+
+🎯 EXPECTED OUTPUT:
+═══════════════════════════════════════════════════════════
+
+  When you run the listeners:
+    ✓ Normal messages appear in WHITE
+    ✓ Errors appear in RED
+    ✓ Warnings appear in YELLOW
+
+
+🔧 CUSTOMIZATION:
+═══════════════════════════════════════════════════════════
+
+  To change colors, edit log_colors in any listener file:
+
+    log_colors={
+        'INFO': 'white',      ← Change color here
+        'ERROR': 'red',
+        'WARNING': 'yellow',
+        'DEBUG': 'cyan',
+    }
+
+  Available: black, red, green, yellow, blue, purple, cyan, white
+  Use backgrounds: 'red,bg_white'
+
+
+📚 DOCUMENTATION:
+═══════════════════════════════════════════════════════════
+
+  COLORED_LOGGING.md          ← Full technical details
+  COLORED_LOGGING_SUMMARY.txt ← This implementation
+
+
+✅ STATUS:
+═══════════════════════════════════════════════════════════
+
+  ✓ All listeners have colored logging
+  ✓ INFO logs display in WHITE
+  ✓ ERROR logs display in RED
+  ✓ Ready to use
+
+
+═══════════════════════════════════════════════════════════
+
+  Run: python -m etl.main.run_all_listeners
+  Watch the beautiful colored output! 🎨
+
+═══════════════════════════════════════════════════════════
+

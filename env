@@ -1,0 +1,12 @@
+# ─── MongoDB Credentials ────────────────────────────────────
+MONGO_ROOT_USER=admin
+MONGO_ROOT_PASSWORD=admin123
+MONGO_DATABASE=mydb
+
+# ─── App User ────────────────────────────────────────────────
+MONGO_APP_USER=appuser
+MONGO_APP_PASSWORD=apppassword
+
+# ─── Mongo Express UI ───────────────────────────────────────
+ME_BASICAUTH_USER=admin
+ME_BASICAUTH_PASSWORD=admin123

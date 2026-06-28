@@ -1,0 +1,87 @@
+version: "3.9"
+
+# ════════════════════════════════════════════════════════════════════════════
+# OLLAMA LOCAL LLM RUNTIME
+# ════════════════════════════════════════════════════════════════════════════
+# Use with: docker-compose -f docker-compose.ollama.yml up -d
+#
+# Provides:
+# - Ollama API server (port 11434) - Run LLMs locally
+# - Open WebUI (port 3001) - Web interface for Ollama
+#
+# Supported Models:
+# - llama2, mistral, neural-chat, starling-lm, orca-mini
+# - phi, neural-chat, stable-code, yi, and many more
+#
+# Usage:
+#   # Start Ollama
+#   docker-compose -f docker-compose.ollama.yml up -d
+#
+#   # Pull and run a model
+#   curl http://localhost:11434/api/pull -d '{"name":"mistral"}'
+#
+#   # Generate text
+#   curl http://localhost:11434/api/generate -d '{
+#     "model": "mistral",
+#     "prompt": "Why is the sky blue?"
+#   }'
+# ════════════════════════════════════════════════════════════════════════════
+
+services:
+  # ─────────────────────── OLLAMA API SERVER ──────────────────────────────
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      # Persist downloaded models
+      - ollama_models:/root/.ollama
+    networks:
+      - ollama_net
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    # Increase shm_size for larger models
+    shm_size: 4gb
+
+  # ─────────────────────── OPEN WEBUI INTERFACE ───────────────────────────
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:latest
+    container_name: open-webui
+    restart: unless-stopped
+    ports:
+      - "3001:8080"
+    environment:
+      OLLAMA_API_BASE_URL: http://ollama:11434/api
+      WEBUI_SECRET_KEY: your-secret-key-here
+    volumes:
+      - webui_data:/app/backend/data
+    depends_on:
+      ollama:
+        condition: service_healthy
+    networks:
+      - ollama_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  ollama_models:
+    driver: local
+  webui_data:
+    driver: local
+
+networks:
+  ollama_net:
+    driver: bridge
+

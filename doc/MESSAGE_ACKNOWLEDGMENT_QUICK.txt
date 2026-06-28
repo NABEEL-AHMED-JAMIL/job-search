@@ -1,0 +1,113 @@
+MESSAGE ACKNOWLEDGMENT - QUICK GUIDE
+===================================
+
+✅ PREVENTS DUPLICATE MESSAGES
+
+WHAT CHANGED:
+=============
+
+All 3 listeners now use MANUAL message acknowledgment:
+  ✓ etl/tpd/tpd_test_listener.py
+  ✓ etl/tpd/tpd_truck_listener.py
+  ✓ etl/tpd/tpd_scrapping_listener.py
+
+CONFIGURATION:
+==============
+
+OLD (Auto-commit - duplicates possible):
+  enable_auto_commit=True
+
+NEW (Manual commit - no duplicates):
+  enable_auto_commit=False
+  consumer.commit()  ← Only after successful processing
+
+HOW IT WORKS:
+=============
+
+Message Received
+    ↓
+Process Message
+    ↓
+  Success?
+    ↙    ↖
+  YES    NO
+   ↓      ↓
+commit() (skip)
+   ↓      ↓
+ACKNOWLEDGED  NOT ACKNOWLEDGED
+   ↓              ↓
+Won't retry    Will retry
+
+PROCESS FUNCTION PATTERN:
+=========================
+
+BEFORE (No return value):
+  def process_test_message(message):
+      logger.info(f"Processing: {message}")
+
+AFTER (Returns True/False):
+  def process_test_message(message):
+      try:
+          logger.info(f"Processing: {message}")
+          # Do business logic
+          return True  # Success - acknowledge
+      except Exception as e:
+          logger.error(f"Failed: {e}")
+          return False  # Failure - retry
+
+MATCHES YOUR SENDER SIDE:
+
+Sender (Java):
+  .addCallback(
+      result → handleSendSuccess(),  ← Success
+      ex → handleSendFailure()       ← Failure/Retry
+  )
+
+Receiver (Python):
+  if success:
+      consumer.commit()              ← Message acknowledged (success)
+  else:
+      (no commit)                    ← Message NOT acknowledged (retry)
+
+EXPECTED LOGS:
+
+SUCCESS:
+  [WHITE] INFO - Received message: {...}
+  [WHITE] INFO - Processing message: {...}
+  [WHITE] INFO - Message processed successfully
+  [WHITE] INFO - Message acknowledged - offset: 42
+
+FAILURE:
+  [WHITE] INFO - Received message: {...}
+  [WHITE] INFO - Processing message: {...}
+  [RED] ERROR - Failed to process: error details
+  [YELLOW] WARNING - Message NOT acknowledged - will retry - offset: 42
+
+BENEFITS:
+=========
+
+✅ NO DUPLICATES: Acknowledged messages won't be reprocessed
+✅ NO DATA LOSS: Failed messages automatically retry
+✅ AUTOMATIC RECOVERY: Consumer tracks offsets
+✅ MATCHES SENDER: Same success/failure callback pattern
+
+STATUS:
+=======
+
+✅ All 3 listeners updated
+✅ Manual acknowledgment enabled
+✅ Return value system implemented
+✅ Offset tracking active
+✅ Ready to use
+
+NEXT STEPS:
+
+1. Update process_*_message() functions with your logic
+2. Return True on success, False on failure
+3. Test by sending messages to topics
+4. Check logs for "Message acknowledged" or "Message NOT acknowledged"
+
+---
+
+Done! Your listeners now prevent duplicate messages! 🎉
+

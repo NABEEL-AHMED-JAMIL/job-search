@@ -1,0 +1,157 @@
+version: "3.9"
+
+# ════════════════════════════════════════════════════════════════════════════
+# INTEGRATED STACK: OLLAMA + OPENSEARCH + REDIS
+# ════════════════════════════════════════════════════════════════════════════
+# Use with: docker-compose -f docker-compose.integrated.yml up -d
+#
+# Includes:
+# - Ollama (LLM runtime & API server)
+# - OpenSearch (log aggregation & search)
+# - OpenSearch Dashboards (log visualization)
+# - Redis (caching & session store)
+# - Redis Commander (Redis UI)
+# ════════════════════════════════════════════════════════════════════════════
+
+services:
+  # ─────────────────────── OLLAMA LLM RUNTIME ────────────────────────────
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
+    ports:
+      - "11434:11434"
+    volumes:
+      # Persist downloaded models
+      - ollama_models:/root/.ollama
+    networks:
+      - integrated_net
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    # Increase shm_size for larger models
+    shm_size: 4gb
+    environment:
+      # Optional: set Ollama environment variables
+      OLLAMA_HOST: 0.0.0.0:11434
+
+  # ───────────��─────────── OLLAMA MODEL INITIALIZATION ──────────────────────
+  # This service pulls the mistral model when the stack starts
+  ollama-setup:
+    image: ollama/ollama:latest
+    container_name: ollama-setup
+    restart: "no"
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
+    networks:
+      - integrated_net
+    depends_on:
+      ollama:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        until ollama list >/dev/null 2>&1; do
+          echo "Waiting for Ollama API to become ready..."
+          sleep 2
+        done
+        ollama pull mistral
+        echo "Model ready!"
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+
+  # ─────────────────────── OPENSEARCH (LOG AGGREGATION) ───────────────────
+
+  opensearch:
+    image: opensearchproject/opensearch:2.10.0
+    container_name: opensearch
+    restart: unless-stopped
+    ports:
+      - "9200:9200"
+    environment:
+      discovery.type: single-node
+      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+      # Disable security plugin for local development (not for production)
+      plugins.security.disabled: "true"
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+    networks:
+      - integrated_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9200/_cluster/health?local=true"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:2.10.0
+    container_name: opensearch-dashboards
+    restart: unless-stopped
+    ports:
+      - "5601:5601"
+    environment:
+      OPENSEARCH_HOSTS: http://opensearch:9200
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    networks:
+      - integrated_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5601/api/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ─────────────────────── REDIS (CACHING & SESSION STORE) ────────────────
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --requirepass redis123
+    networks:
+      - integrated_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: redis-commander
+    restart: unless-stopped
+    platform: ${DOCKER_PLATFORM:-linux/amd64}
+    ports:
+      - "8083:8081"
+    environment:
+      REDIS_HOSTS: local:redis:6379:0:redis123
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - integrated_net
+
+volumes:
+  ollama_models:
+    driver: local
+  opensearch_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  integrated_net:
+    driver: bridge
+
