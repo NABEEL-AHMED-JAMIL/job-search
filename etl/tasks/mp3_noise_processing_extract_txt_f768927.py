@@ -114,6 +114,7 @@ import numpy as np
 import noisereduce as nr
 import soundfile as sf
 import webrtcvad
+import torch
 import whisper
 import re
 # job status
@@ -937,12 +938,14 @@ def force_split_segment(start_ms, end_ms, config):
 
 # Loaded once per process — model weights are sizeable; avoid reloading per file.
 _whisper_model = None
+_whisper_device = None
 
 def get_whisper_model(config: WhisperConfig = WhisperConfig()):
-    global _whisper_model
+    global _whisper_model, _whisper_device
     if _whisper_model is None:
-        logger.info(f"Loading Whisper model: {config.MODEL_SIZE}")
-        _whisper_model = whisper.load_model(config.MODEL_SIZE)
+        _whisper_device = "cuda" if torch.cuda.is_available() else "cpu"
+        logger.info(f"Loading Whisper model: {config.MODEL_SIZE} (device={_whisper_device})")
+        _whisper_model = whisper.load_model(config.MODEL_SIZE, device=_whisper_device)
     return _whisper_model
 
 def transcribe_chunks(
@@ -969,6 +972,11 @@ def transcribe_chunks(
             language=config.LANGUAGE,
             temperature=config.TEMPERATURE,
             condition_on_previous_text=config.CONDITION_ON_PREVIOUS_TEXT,
+            # Whisper defaults to fp16=True and silently falls back to fp32 on
+            # CPU, emitting a UserWarning every call. Deciding this explicitly
+            # from the model's actual device avoids the warning without
+            # silencing it globally (which could hide unrelated warnings).
+            fp16=(_whisper_device == "cuda"),
         )
 
         raw_text = whisper_result["text"].strip()
