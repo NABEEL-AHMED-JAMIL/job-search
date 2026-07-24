@@ -58,11 +58,31 @@ def parse_926(xml_payload):
 
 def parse_925(xml_payload):
     """
-        Method use to parse F768925
+        Method use to parse pipeline config (session, pdfHighlighter, description)
     """
-    return {
-        "id": "F768925"
-    }
+    try:
+        root = ET.fromstring(xml_payload)
+        session = root.find("session")
+        pdf_highlighter = root.find("pdfHighlighter")
+        return {
+            "session": {
+                "username": session.find("username").text,
+                "password": session.find("password").text,
+                "auth": session.find("auth").text
+            },
+            "pdfHighlighter": {
+                "organizationsTask": pdf_highlighter.find("organizationsTask").text,
+                "fieldMappingUrl": pdf_highlighter.find("fieldMappingUrl").text,
+                "targetInputFileFolder": pdf_highlighter.find("targetInputFileFolder").text,
+                "targetOutputFileFolder": pdf_highlighter.find("targetOutputFileFolder").text,
+                "targetOutputType": pdf_highlighter.find("targetOutputType").text,
+                "openCV": pdf_highlighter.find("openCV").text.strip().lower() == "true"
+            },
+            "description": root.find("description").text
+        }
+    except Exception:
+        logger.exception("Failed to parse pipeline config XML")
+        return None
 
 def parse_924(xml_payload):
     """

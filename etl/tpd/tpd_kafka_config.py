@@ -32,7 +32,7 @@ logger.setLevel(logging.INFO)
 # ==============================================================================
 def create_consumer(topic_name, bootstrap_services, group_id) -> KafkaConsumer:
     """
-    Create Kafka Consumer
+        Create Kafka Consumer
     """
     return KafkaConsumer(
         topic_name,

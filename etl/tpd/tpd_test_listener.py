@@ -114,7 +114,7 @@ def handle_message(message, payload):
 # ------------------------------------------------------------------------------
 def execute_task(payload: dict):
     """
-    Process a single job payload.
+        Process a single job payload.
     """
     job_queue = payload.get("jobQueue", {})
     job_id = job_queue.get("jobId")
@@ -139,7 +139,7 @@ def execute_task(payload: dict):
 
 def extract_task_payload(payload: dict) -> dict:
     """
-    Extract and parse task payload.
+        Extract and parse task payload.
     """
     task_payload_xml = (
         payload.get("taskDetail", {})
@@ -152,7 +152,7 @@ def extract_task_payload(payload: dict) -> dict:
 
 def process_batches(job_id, job_queue_id, task_payload):
     """
-    Execute business processing.
+        Execute business processing.
     """
     start = int(task_payload["start"])
     end = int(task_payload["end"])
@@ -169,7 +169,7 @@ def process_batches(job_id, job_queue_id, task_payload):
 # ==============================================================================
 def update_job_status(job_id, job_queue_id, status, message):
     """
-    Update job status.
+        Update job status.
     """
     time.sleep(0.2);
     job_state_client.change_job_state(job_id, job_queue_id, status, message)
@@ -180,7 +180,7 @@ def update_job_status(job_id, job_queue_id, status, message):
 # ------------------------------------------------------------------------------
 def start_consumers(num_processes=3):
     """
-    Start multiple Kafka consumer processes
+        Start multiple Kafka consumer processes
     """
     processes = []
 

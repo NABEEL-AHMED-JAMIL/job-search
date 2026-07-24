@@ -14,10 +14,6 @@ from etl.tpd.tpd_kafka_config import create_consumer
 from etl.util.xml_parser import pipeline_xml_parser
 from etl.util.job_state_client import JobStateClient
 from etl.util.job_status import JobStatus
-# Tasks
-from etl.tasks.etl_hurricanes_f768926 import fetch_and_extract_all_seasons
-from etl.tasks.mp3_noise_processing_extract_txt_f768927 import mp3_noise_processing_extract_txt
-
 # ------------------------------------------------------------------------------
 # Load environment variables
 # ------------------------------------------------------------------------------
@@ -120,9 +116,16 @@ def execute_task(message, payload: dict):
 
         task_payload['job_id'] = job_id
         task_payload['job_queue_id'] = job_queue_id
-        if pipeline_id == 'F768926':
+        if pipeline_id == 'F768925':
+            # Imported lazily so a broken dependency chain in one task (e.g. mp3's
+            # whisper/numba stack) can't block the listener from starting at all.
+            from etl.tasks.pdf_highlighter_f768925 import pdf_highlighter_text_extraction_etl
+            pdf_highlighter_text_extraction_etl(task_payload)
+        elif pipeline_id == 'F768926':
+            from etl.tasks.etl_hurricanes_f768926 import fetch_and_extract_all_seasons
             fetch_and_extract_all_seasons(task_payload)
         elif pipeline_id == 'F768927':
+            from etl.tasks.mp3_noise_processing_extract_txt_f768927 import mp3_noise_processing_extract_txt
             mp3_noise_processing_extract_txt(task_payload)
 
         update_job_status(job_id, job_queue_id, JobStatus.COMPLETED,f"Job {job_id} completed successfully.")
@@ -135,7 +138,7 @@ def execute_task(message, payload: dict):
 
 def extract_task_payload(pipeline_id, payload: dict):
     """
-    Extract and parse task payload.
+        Extract and parse task payload.
     """
     parsed_payload = pipeline_xml_parser[pipeline_id](payload.get("taskPayload"))
     logger.info("Parsed Task Payload: %s", parsed_payload)
@@ -146,7 +149,7 @@ def extract_task_payload(pipeline_id, payload: dict):
 # ==============================================================================
 def update_job_status(job_id, job_queue_id, status, message):
     """
-    Update job status.
+        Update job status.
     """
     time.sleep(0.2)  # Simulate some processing delay
     job_state_client.change_job_state(job_id, job_queue_id, status, message)
@@ -157,7 +160,7 @@ def update_job_status(job_id, job_queue_id, status, message):
 # ------------------------------------------------------------------------------
 def start_consumers(num_processes=3):
     """
-    Start multiple Kafka consumer processes
+        Start multiple Kafka consumer processes
     """
     processes = []
     for i in range(num_processes):
