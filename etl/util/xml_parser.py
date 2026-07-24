@@ -76,7 +76,6 @@ def parse_925(xml_payload):
                 "targetInputFileFolder": pdf_highlighter.find("targetInputFileFolder").text,
                 "targetOutputFileFolder": pdf_highlighter.find("targetOutputFileFolder").text,
                 "targetOutputType": pdf_highlighter.find("targetOutputType").text,
-                "openCV": pdf_highlighter.find("openCV").text.strip().lower() == "true"
             },
             "description": root.find("description").text
         }
