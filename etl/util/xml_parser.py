@@ -50,7 +50,8 @@ def parse_926(xml_payload):
             "id": "F768926",
             "start_year": root.find("start_year").text,
             "end_year": root.find("end_year").text,
-            "hurricanes_url": root.find("hurricanes_url").text
+            "hurricanes_url": root.find("hurricanes_url").text,
+            "folder": root.find("folder").text
         }
     except Exception:
         logger.exception("Failed to parse task payload XML")

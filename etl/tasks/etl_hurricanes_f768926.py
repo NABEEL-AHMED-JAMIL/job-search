@@ -1,4 +1,5 @@
 # Import required packages
+import io
 import pandas as pd
 import time
 import os
@@ -11,6 +12,7 @@ from bs4 import BeautifulSoup  # To parse HTML content
 from dotenv import load_dotenv  # To load environment variables, such as API keys
 from typing import Optional, Union
 from etl.util.job_state_client import JobStateClient
+from etl.util.minio_client import MinioClient
 
 # ------------------------------------------------------------------------------
 # Load environment variables
@@ -20,8 +22,7 @@ load_dotenv()
 # ENV DATA LOAD
 # ------------------------------------------------------------------------------
 etl_event_url = os.getenv("ETL_EVENT_URL")
-ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
-file_storage_path = os.getenv("FILE_STORAGE_PATH")
+minio_bucket = os.getenv("MINIO_BUCKET_NAME", "etl-bucket")
 # ------------------------------------------------------------------------------
 # Logging Configuration
 # ------------------------------------------------------------------------------
@@ -44,6 +45,7 @@ logger.setLevel(logging.INFO)
 # Dependencies
 # ------------------------------------------------------------------------------
 job_state_client = JobStateClient(etl_event_url)
+minio_client = MinioClient()
 
 
 def get_url_content(
@@ -143,16 +145,16 @@ def extract_hurricane_name(task_payload, soup: BeautifulSoup, year: int) -> list
 
 def save_to_bucket(task_payload, year, hurricane_storm):
     """
-        Save the extracted hurricane data to a CSV file in a bucket (simulated with local storage).
+        Save the extracted hurricane data to a CSV file in MinIO, under
+        {folder}/job_{job_id}_queue_{job_queue_id}/hurricane_data_{year}.csv
+        (folder comes from the pipeline's <folder> config, e.g. "hurricane/output").
     """
     time.sleep(0.1)
     # folder should be jobId and queue id
-    folder = os.path.join(
-        file_storage_path,
-        f"output/job_{task_payload['job_id']}_queue_{task_payload['job_queue_id']}"
-    )
-    job_audit_log(task_payload, f"Creating folder {folder} in bucket...")
-    os.makedirs(folder, exist_ok=True)
+    output_prefix = "/".join([
+        task_payload["folder"],
+        f"job_{task_payload['job_id']}_queue_{task_payload['job_queue_id']}"
+    ])
     # Create DataFrame for clean the data
     df = pd.DataFrame(hurricane_storm)
     # remove the "Other system" entries which are not actual hurricanes
@@ -160,11 +162,17 @@ def save_to_bucket(task_payload, year, hurricane_storm):
     # remove the extract stuff
     df["content"] = df["content"].str.replace(r"\[\d+\]", "", regex=True)
     df["content"] = df["content"].str.strip()
-    # Save CSV file
-    file_path = os.path.join(folder, f"hurricane_data_{year}.csv")
-    df.to_csv(file_path, index=False)
-    logger.info(f"Data for {year} saved successfully.")
-    job_audit_log(task_payload, f"Data for {year} saved successfully.")
+    # Save CSV file to MinIO
+    object_name = f"{output_prefix}/hurricane_data_{year}.csv"
+    job_audit_log(task_payload, f"Uploading {object_name} to {minio_bucket}...")
+    buffer = io.BytesIO()
+    df.to_csv(buffer, index=False)
+    if not minio_client.upload_bytes(minio_bucket, object_name, buffer.getvalue(), content_type="text/csv"):
+        logger.error(f"Could not upload {object_name} to MinIO bucket {minio_bucket}.")
+        job_audit_log(task_payload, f"Could not upload {object_name} to MinIO bucket {minio_bucket}.")
+        raise RuntimeError(f"Could not upload extracted output to {minio_bucket}/{object_name}")
+    logger.info(f"Data for {year} saved successfully to {minio_bucket}/{object_name}.")
+    job_audit_log(task_payload, f"Data for {year} saved successfully to {minio_bucket}/{object_name}.")
 
 def job_audit_log(task_payload, message: str):
     """

@@ -11,6 +11,7 @@ joblib==1.5.3
 kafka-python==3.0.6
 kiwisolver==1.5.0
 matplotlib==3.11.0
+minio==7.2.20
 mutagen==1.48.1
 noisereduce==3.0.3
 numpy==2.5.0
@@ -21,6 +22,7 @@ pdfplumber==0.11.10
 pillow==12.2.0
 pycparser==3.0
 pydub==0.25.1
+pymupdf==1.28.0
 pyparsing==3.3.2
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.2

@@ -1,14 +1,19 @@
+import io
+import re
 import time
 import os
 import logging
 import colorlog
+import fitz  # PyMuPDF
 import pandas as pd
 import pdfplumber
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from dotenv import load_dotenv
+# class imports
 from etl.util.job_state_client import JobStateClient
+from etl.util.minio_client import MinioClient
 
 # ------------------------------------------------------------------------------
 # Load environment variables
@@ -18,6 +23,7 @@ load_dotenv()
 # ENV DATA LOAD
 # ------------------------------------------------------------------------------
 etl_event_url = os.getenv("ETL_EVENT_URL")
+minio_bucket = os.getenv("MINIO_BUCKET_NAME", "etl-bucket")
 # ------------------------------------------------------------------------------
 # Logging Configuration
 # ------------------------------------------------------------------------------
@@ -40,6 +46,7 @@ logger.setLevel(logging.INFO)
 # Dependencies
 # ------------------------------------------------------------------------------
 job_state_client = JobStateClient(etl_event_url)
+minio_client = MinioClient()
 
 
 def _build_retrying_session():
@@ -132,21 +139,24 @@ def fetch_highlighters_mapping(task_payload, pdf_highlighter, auth_payload):
 
 def extract_fields_to_output(task_payload, pdf_highlighter, pdf_highlighter_payload):
     """
-        Read every PDF in targetInputFileFolder, crop each mapped field's bounding box out of
-        its page with pdfplumber (coordinates are PDF points, top-left origin — the same
-        space the field mapping was captured in), and write one row per file to
-        targetOutputFileFolder in targetOutputType format.
+        Read every PDF under targetInputFileFolder/organizationsTask in MinIO (bucket
+        MINIO_BUCKET_NAME), crop each mapped field's bounding box out of its page with
+        pdfplumber (coordinates are PDF points, top-left origin — the same space the field
+        mapping was captured in), and upload one row per file to targetOutputFileFolder in
+        MinIO in targetOutputType format. Path config (bucket/targetInputFileFolder/
+        organizationsTask, bucket/targetOutputFileFolder/job_.../taskUuid) stays exactly the
+        same as before — only the storage backend moved from local disk to MinIO.
         <pdfHighlighter>
             <targetInputFileFolder>/Users/nabeel.amd93/Desktop/PDFHighlighter/Input</targetInputFileFolder>
             <targetOutputFileFolder>/Users/nabeel.amd93/Desktop/PDFHighlighter/Output</targetOutputFileFolder>
             <targetOutputType>CSV</targetOutputType>
         </pdfHighlighter>
     """
-    input_folder = f"{pdf_highlighter.get('targetInputFileFolder')}/{pdf_highlighter.get('organizationsTask')}"
+    input_prefix = f"{pdf_highlighter.get('targetInputFileFolder')}/{pdf_highlighter.get('organizationsTask')}"
     output_folder = pdf_highlighter.get("targetOutputFileFolder")
     output_type = (pdf_highlighter.get("targetOutputType") or "CSV").upper()
 
-    if not all([input_folder, output_folder]):
+    if not all([input_prefix, output_folder]):
         logger.error("Missing input/output folder information in task payload.")
         job_audit_log(task_payload, "Missing input/output folder information in task payload.")
         raise ValueError("Missing targetInputFileFolder/targetOutputFileFolder in task payload.")
@@ -158,19 +168,24 @@ def extract_fields_to_output(task_payload, pdf_highlighter, pdf_highlighter_payl
         raise ValueError("No field mapping returned for task; nothing to extract.")
 
     rows = []
-    for file_name in sorted(os.listdir(input_folder)):
-        input_file_path = os.path.join(input_folder, file_name)
-        if not (os.path.isfile(input_file_path) and file_name.lower().endswith(".pdf")):
+    for object_name in sorted(minio_client.list_objects(minio_bucket, prefix=input_prefix)):
+        file_name = object_name.rsplit("/", 1)[-1]
+        if not file_name.lower().endswith(".pdf"):
             continue
 
         logger.info(f"Processing {file_name}")
         job_audit_log(task_payload, f"Processing {file_name}")
-        rows.append(extract_fields_from_pdf(file_name, input_file_path, fields))
+        pdf_bytes = minio_client.get_object_bytes(minio_bucket, object_name)
+        if pdf_bytes is None:
+            logger.error(f"Could not read {object_name} from MinIO bucket {minio_bucket}.")
+            job_audit_log(task_payload, f"Could not read {object_name} from MinIO bucket {minio_bucket}.")
+            continue
+        rows.append(extract_fields_from_pdf(file_name, pdf_bytes, fields))
 
     if not rows:
-        logger.error(f"No supported files found in {input_folder}.")
-        job_audit_log(task_payload, f"No supported files found in {input_folder}.")
-        raise ValueError(f"No supported files found in {input_folder}.")
+        logger.error(f"No supported files found in {minio_bucket}/{input_prefix}.")
+        job_audit_log(task_payload, f"No supported files found in {minio_bucket}/{input_prefix}.")
+        raise ValueError(f"No supported files found in {minio_bucket}/{input_prefix}.")
 
     task_uuid = (pdf_highlighter_payload.get("task") or {}).get("uuid")
     if not task_uuid:
@@ -178,23 +193,85 @@ def extract_fields_to_output(task_payload, pdf_highlighter, pdf_highlighter_payl
         job_audit_log(task_payload, "No task uuid returned in field mapping response.")
         raise ValueError("No task uuid returned in field mapping response.")
 
-    job_output_folder = os.path.join(
+    job_output_prefix = "/".join([
         output_folder,
         f"job_{task_payload['job_id']}_queue_{task_payload['job_queue_id']}",
         task_uuid
-    )
-    output_file_path = write_extracted_rows(job_output_folder, rows, output_type)
-    logger.info(f"Extraction complete. {len(rows)} file(s) written to {output_file_path}")
-    job_audit_log(task_payload, f"Extraction complete. {len(rows)} file(s) written to {output_file_path}")
+    ])
+    output_object_name = write_extracted_rows(job_output_prefix, rows, output_type)
+    logger.info(f"Extraction complete. {len(rows)} file(s) written to {minio_bucket}/{output_object_name}")
+    job_audit_log(task_payload, f"Extraction complete. {len(rows)} file(s) written to {minio_bucket}/{output_object_name}")
 
 
-def extract_fields_from_pdf(file_name, input_file_path, fields):
+def _is_truthy(value):
     """
-        Method use to crop each field's bounding box out of its page and return one
-        {file_name, label1: text1, label2: text2, ...} row for the file.
+        Method use to interpret useXpathFirst whether the field mapping API gives it as a
+        real JSON boolean or as a string (e.g. "True"/"false") — a bare truthiness check on
+        a string is wrong here since a non-empty "False" would otherwise still be truthy.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() == "true"
+    return bool(value)
+
+
+_SELECTOR_PATH_RE = re.compile(r"^page\[(\d+)\]/text\(\)\[(\d+):(\d+)\]$")
+
+
+def _page_spans(fitz_page):
+    """
+        Method use to list a PyMuPDF page's text spans in reading order, skipping blank
+        ones. A "span" here is a run of text from one PDF content-stream text-show
+        operation (Tj/TJ) with consistent formatting — the same granularity pdf.js's
+        getTextContent() items use in the browser, verified index-for-index against a real
+        ticket PDF (page[1]/text()[13:13] and [49:49] both matched exactly). pdfplumber's
+        extract_words() instead re-tokenizes by whitespace, which does not line up.
+    """
+    spans = []
+    for block in fitz_page.get_text("dict")["blocks"]:
+        for line in block.get("lines", []):
+            for span in line["spans"]:
+                if span["text"].strip():
+                    spans.append(span["text"])
+    return spans
+
+
+def extract_field_by_path(fitz_doc, path):
+    """
+        Method use to resolve a field's value from its selector `path`
+        (e.g. "page[1]/text()[13:13]") by indexing into the page's PyMuPDF text spans.
+        Index/order-based (rather than coordinate-based) so it keeps resolving correctly
+        even if the section's position shifts between PDF instances of the same template —
+        as long as the spans before it on the page stay the same in count and order.
+        Returns None if the path is malformed, the page doesn't exist, or the index is out
+        of range, so the caller can fall back to coordinates.
+    """
+    match = _SELECTOR_PATH_RE.match(path or "")
+    if not match:
+        return None
+    page_number, start, end = (int(g) for g in match.groups())
+    if page_number < 1 or page_number > fitz_doc.page_count:
+        return None
+
+    spans = _page_spans(fitz_doc[page_number - 1])
+    if start > end or start < 0 or end >= len(spans):
+        return None
+
+    value = " ".join(spans[start:end + 1]).strip()
+    return value or None
+
+
+def extract_fields_from_pdf(file_name, pdf_bytes, fields):
+    """
+        Method use to resolve each field's value and return one
+        {file_name, label1: text1, label2: text2, ...} row for the file. When a field's
+        useXpathFirst is set, its selector `path` is tried first (PyMuPDF span index); if
+        that doesn't resolve, or useXpathFirst is off, the field's bounding box is cropped
+        directly via pdfplumber (the original coordinate-only behavior).
     """
     row = {"file_name": file_name}
-    with pdfplumber.open(input_file_path) as pdf:
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf, fitz.open(stream=pdf_bytes, filetype="pdf") as fitz_doc:
         for field in fields:
             label = field.get("label")
             page_number = field.get("page") or 1
@@ -203,32 +280,49 @@ def extract_fields_from_pdf(file_name, input_file_path, fields):
                 row[label] = None
                 continue
             page = pdf.pages[page_number - 1]
-            bbox = (field["x"], field["y"], field["x"] + field["width"], field["y"] + field["height"])
-            row[label] = (page.crop(bbox).extract_text() or "").strip()
+
+            value = None
+            selector_path = field.get("selectorPath")
+            if _is_truthy(field.get("useXpathFirst")) and selector_path:
+                value = extract_field_by_path(fitz_doc, selector_path)
+                if value is None:
+                    logger.warning(f"{file_name}: field '{label}' path selector did not resolve on page {page_number}; falling back to coordinates.")
+
+            if value is None:
+                bbox = (field["x"], field["y"], field["x"] + field["width"], field["y"] + field["height"])
+                value = (page.crop(bbox).extract_text() or "").strip()
+
+            row[label] = value
     return row
 
 
-def write_extracted_rows(output_folder, rows, output_type):
+def write_extracted_rows(output_prefix, rows, output_type):
     """
-        Method use to write extracted rows to targetOutputFileFolder in the requested format.
+        Method use to upload extracted rows to targetOutputFileFolder in MinIO in the
+        requested format.
     """
-    os.makedirs(output_folder, exist_ok=True)
     df = pd.DataFrame(rows)
     file_stem = f"pdf_highlighter_extract_{int(time.time())}"
+    buffer = io.BytesIO()
 
     if output_type == "CSV":
-        output_file_path = os.path.join(output_folder, f"{file_stem}.csv")
-        df.to_csv(output_file_path, index=False)
+        object_name = f"{output_prefix}/{file_stem}.csv"
+        df.to_csv(buffer, index=False)
+        content_type = "text/csv"
     elif output_type in ("XLSX", "EXCEL"):
-        output_file_path = os.path.join(output_folder, f"{file_stem}.xlsx")
-        df.to_excel(output_file_path, index=False)
+        object_name = f"{output_prefix}/{file_stem}.xlsx"
+        df.to_excel(buffer, index=False)
+        content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     elif output_type == "JSON":
-        output_file_path = os.path.join(output_folder, f"{file_stem}.json")
-        df.to_json(output_file_path, orient="records", indent=2)
+        object_name = f"{output_prefix}/{file_stem}.json"
+        buffer.write(df.to_json(orient="records", indent=2).encode("utf-8"))
+        content_type = "application/json"
     else:
         raise ValueError(f"Unsupported targetOutputType: {output_type}")
 
-    return output_file_path
+    if not minio_client.upload_bytes(minio_bucket, object_name, buffer.getvalue(), content_type=content_type):
+        raise RuntimeError(f"Could not upload extracted output to {minio_bucket}/{object_name}")
+    return object_name
 
 
 def job_audit_log(task_payload, message: str):

@@ -11,6 +11,9 @@ version: "3.9"
 # - OpenSearch Dashboards (log visualization)
 # - Redis (caching & session store)
 # - Redis Commander (Redis UI)
+# - Cassandra (NoSQL wide-column database)
+# - Cassandra Web (Cassandra data viewer)
+# - MinIO (S3-compatible local object/file storage, with web console)
 # ════════════════════════════════════════════════════════════════════════════
 
 services:
@@ -96,6 +99,7 @@ services:
       - "5601:5601"
     environment:
       OPENSEARCH_HOSTS: http://opensearch:9200
+      DISABLE_SECURITY_DASHBOARDS_PLUGIN: "true"
     depends_on:
       opensearch:
         condition: service_healthy
@@ -134,7 +138,7 @@ services:
     restart: unless-stopped
     platform: ${DOCKER_PLATFORM:-linux/amd64}
     ports:
-      - "8083:8081"
+      - "8084:8081"
     environment:
       REDIS_HOSTS: local:redis:6379:0:redis123
     depends_on:
@@ -143,12 +147,79 @@ services:
     networks:
       - integrated_net
 
+  # ─────────────────────── CASSANDRA (NOSQL DATABASE) ─────────────────────
+
+  cassandra:
+    image: cassandra:4.1
+    container_name: cassandra
+    restart: unless-stopped
+    ports:
+      - "9042:9042"
+    environment:
+      CASSANDRA_CLUSTER_NAME: integrated_cluster
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    networks:
+      - integrated_net
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'describe cluster' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  cassandra-web:
+    image: markusgulden/cassandra-web:latest
+    container_name: cassandra-web
+    restart: unless-stopped
+    ports:
+      - "8085:3000"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        cassandra-web --hosts "$(getent hosts cassandra | awk '{print $1}')" --port 9042
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    networks:
+      - integrated_net
+
+  # ─────────────────────── MINIO (LOCAL FILE/OBJECT STORAGE) ──────────────
+  # S3-compatible storage. API on 9000, web console on 9001 for
+  # uploading/browsing files/buckets by hand.
+
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    volumes:
+      - minio_data:/data
+    command: ["server", "/data", "--console-address", ":9001"]
+    networks:
+      - integrated_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
 volumes:
   ollama_models:
     driver: local
   opensearch_data:
     driver: local
   redis_data:
+    driver: local
+  cassandra_data:
+    driver: local
+  minio_data:
     driver: local
 
 networks:
