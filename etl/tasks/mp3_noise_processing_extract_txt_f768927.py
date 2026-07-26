@@ -99,6 +99,8 @@ import logging
 import time
 
 import json
+import shutil
+import tempfile
 from pathlib import Path
 
 import colorlog
@@ -108,8 +110,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 # audio processing
 from pydub import AudioSegment
-from mutagen.mp3 import MP3
-from mutagen import MutagenError
+from mutagen import File as MutagenFile, MutagenError
 import numpy as np
 import noisereduce as nr
 import soundfile as sf
@@ -119,6 +120,7 @@ import whisper
 import re
 # job status
 from etl.util.job_state_client import JobStateClient
+from etl.util.minio_client import MinioClient
 
 # ------------------------------------------------------------------------------
 # Logging Configuration
@@ -146,10 +148,14 @@ load_dotenv()
 # ENV DATA LOAD
 # ------------------------------------------------------------------------------
 etl_event_url = os.getenv("ETL_EVENT_URL")
+minio_bucket = os.getenv("MINIO_BUCKET_NAME", "etl-bucket")
 # ------------------------------------------------------------------------------
 # Dependencies
 # ------------------------------------------------------------------------------
 job_state_client = JobStateClient(etl_event_url)
+minio_client = MinioClient()
+# Audio extensions this pipeline accepts as input.
+AUDIO_EXTENSIONS = (".mp3", ".m4a")
 # ---------------------------------------------------------------------------
 # Config — tune these for your use case
 # ---------------------------------------------------------------------------
@@ -202,7 +208,14 @@ class WhisperConfig:
     # egress, pre-download the model weights or whitelist that domain.
     MODEL_SIZE: str = "small"     # tiny/base/small/medium/large — bigger = more accurate, slower
     LANGUAGE: str = "en"          # set None to let Whisper auto-detect (slightly slower, less reliable)
-    TEMPERATURE: float = 0.0      # 0.0 = deterministic decoding; raise for more varied output
+    # Whisper's own fallback ladder (its library default). A single fixed value here
+    # (e.g. 0.0) disables Whisper's built-in retry: normally, when a decode looks like
+    # a repetition/hallucination loop (compression_ratio > compression_ratio_threshold,
+    # or avg_logprob < logprob_threshold), Whisper automatically re-decodes at the next
+    # temperature in this tuple instead of returning the looping text as-is. Pinning it
+    # to a single float silently disabled that safety net, which is what caused chunks
+    # to come back with a phrase repeated dozens of times ("the same amount of..." etc).
+    TEMPERATURE: tuple = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
     CONDITION_ON_PREVIOUS_TEXT: bool = False  # False avoids error compounding across independent chunks
 
 @dataclass
@@ -399,31 +412,35 @@ def validate_audio(
         )
 
     # ----------------------------------------------------------------------
-    # 2. MP3 Validation
+    # 2. Audio Tag Validation (MP3 or M4A)
     # ----------------------------------------------------------------------
     try:
-        mp3_info = MP3(filepath)
-    except MutagenError as e:
+        audio_info = MutagenFile(filepath)
+    except MutagenError:
+        audio_info = None
+
+    if audio_info is None or audio_info.info is None:
         return add_issue(
-            "INVALID_MP3",
-            f"File is not a valid MP3 or is corrupted: {e}",
+            "INVALID_AUDIO_FILE",
+            f"File is not a valid MP3/M4A or is corrupted: {filepath}",
             ValidationStatus.FAIL,
             return_result=True,
         )
 
-    result.metadata.bitrate_kbps = round(mp3_info.info.bitrate / 1000)
-    result.metadata.sample_rate_hz = mp3_info.info.sample_rate
-    result.metadata.channels = mp3_info.info.channels
+    bitrate = getattr(audio_info.info, "bitrate", None)
+    result.metadata.bitrate_kbps = round(bitrate / 1000) if bitrate else None
+    result.metadata.sample_rate_hz = audio_info.info.sample_rate
+    result.metadata.channels = audio_info.info.channels
 
     logger.info(
-        "MP3 info: bitrate=%s kbps, sample_rate=%s Hz, channels=%s",
+        "Audio info: bitrate=%s kbps, sample_rate=%s Hz, channels=%s",
         result.metadata.bitrate_kbps,
         result.metadata.sample_rate_hz,
         result.metadata.channels,
     )
     job_audit_log(
         task_payload,
-        f"MP3 info: bitrate={result.metadata.bitrate_kbps} kbps, "
+        f"Audio info: bitrate={result.metadata.bitrate_kbps} kbps, "
         f"sample_rate={result.metadata.sample_rate_hz} Hz, "
         f"channels={result.metadata.channels}",
     )
@@ -432,7 +449,7 @@ def validate_audio(
     # 3. Decode Validation
     # ----------------------------------------------------------------------
     try:
-        audio = AudioSegment.from_mp3(filepath)
+        audio = AudioSegment.from_file(filepath)
     except Exception as e:
         return add_issue(
             "DECODE_FAILED",
@@ -1121,94 +1138,204 @@ def job_audit_log(task_payload, message: str):
     time.sleep(0.1)
     job_state_client.job_audit_log(task_payload["job_id"], task_payload["job_queue_id"], message)
 
-# ---------------------------------------------------------------------------
-# CLI usage example
-# ---------------------------------------------------------------------------
+def process_one_audio_file(task_payload, file_name, input_file_path, file_output_folder):
+    """
+        Runs the full pipeline (validate -> noise reduction -> VAD -> segmentation
+        -> transcription -> cleanup) for one local audio file (mp3 or m4a), writing
+        all intermediate artifacts under file_output_folder. Returns the cleaned
+        transcript text, or None if validation failed.
+    """
+    # 1). Audio Validation
+    result = validate_audio(task_payload, input_file_path)
+    logger.info(f"Validation result for {file_name}: {result.status.value}")
+    logger.debug(f"Metadata for {file_name}: {json.dumps(result.metadata.__dict__, indent=2)}")
+    job_audit_log(task_payload, f"Validation result for {file_name}: {result.status.value}")
+    if result.issues:
+        for issue in result.issues:
+            logger.info(f"[{issue.severity.value.upper()}] {issue.code}: {issue.message}")
+            job_audit_log(task_payload, f"[{issue.severity.value.upper()}] {issue.code}: {issue.message}")
+
+    if result.status == ValidationStatus.FAIL:
+        logger.error(f"Validation failed for {file_name} -- skipping the rest of the pipeline")
+        job_audit_log(task_payload, f"Validation failed for {file_name} -- skipping the rest of the pipeline")
+        return None
+
+    wav_name = f"{Path(file_name).stem}.wav"
+    output_file_path = file_output_folder / wav_name
+
+    # 2). Noise Reduction
+    result = reduce_noise(task_payload, input_file_path, output_file_path)
+    logger.info(
+        f"{file_name}: noise reduction done -- input {result.input_rms_db:.1f} dBFS, "
+        f"output {result.output_rms_db:.1f} dBFS ({result.noise_reduced_db:.1f} dB reduced)"
+    )
+    job_audit_log(
+        task_payload,
+        f"{file_name}: noise reduction done -- input {result.input_rms_db:.1f} dBFS, "
+        f"output {result.output_rms_db:.1f} dBFS ({result.noise_reduced_db:.1f} dB reduced)",
+    )
+
+    # 3). Voice Activity Detection (VAD)
+    vad_output_path = file_output_folder / "speech" / f"{Path(file_name).stem}_speech.wav"
+    result = detect_voice_activity(task_payload, result.output_path, vad_output_path)
+    logger.info(f"{file_name}: speech ratio {result.speech_ratio * 100:.1f}%, {len(result.segments)} segment(s)")
+    job_audit_log(task_payload, f"{file_name}: speech ratio {result.speech_ratio * 100:.1f}%, {len(result.segments)} segment(s)")
+
+    # Per-segment detail is debug-only -- a long recording can produce hundreds of
+    # segments, which would otherwise flood the logs (and the job's audit trail).
+    for i, seg in enumerate(result.segments):
+        logger.debug(f"  [{i}] {seg.start_ms / 1000:.2f}s - {seg.end_ms / 1000:.2f}s")
+
+    if not result.segments:
+        logger.warning(f"{file_name}: no speech detected -- transcript will be empty")
+        job_audit_log(task_payload, f"{file_name}: no speech detected -- transcript will be empty")
+
+    # 4). Audio Segmentation
+    # NOTE: pass the NOISE-REDUCED audio path (the input VAD itself
+    # received) together with the segment boundaries VAD found —
+    # NOT vad_output_path, which is the concatenated speech-only
+    # file and no longer has silence gaps to safely split on.
+    noise_reduced_path = output_file_path
+    chunks_output_dir = file_output_folder / "chunks"
+    result = segment_audio(task_payload, noise_reduced_path, result.segments, chunks_output_dir)
+    logger.info(f"{file_name}: created {len(result.chunks)} chunk(s), {result.forced_split_count} forced split(s)")
+    job_audit_log(
+        task_payload,
+        f"{file_name}: created {len(result.chunks)} chunk(s), {result.forced_split_count} forced split(s)",
+    )
+    if result.forced_split_count:
+        logger.warning(
+            f"{file_name}: {result.forced_split_count} chunk(s) were force-split mid-speech "
+            f"-- transcription quality may suffer at those boundaries"
+        )
+        job_audit_log(
+            task_payload,
+            f"{file_name}: {result.forced_split_count} chunk(s) force-split mid-speech",
+        )
+
+    for i, chunk in enumerate(result.chunks):
+        flag = " [FORCED SPLIT]" if chunk.forced_split else ""
+        logger.debug(
+            f"  [{i}] {chunk.start_ms / 1000:.2f}s - {chunk.end_ms / 1000:.2f}s "
+            f"({chunk.duration_ms / 1000:.2f}s){flag}"
+        )
+
+    # 5). Speech-to-Text (Whisper)
+    segmentation_result = result
+    result = transcribe_chunks(task_payload, segmentation_result.output_paths, segmentation_result.chunks)
+    logger.info(f"{file_name}: transcribed {len(result.segments)} chunk(s), {result.low_confidence_count} low-confidence")
+    job_audit_log(
+        task_payload,
+        f"{file_name}: transcribed {len(result.segments)} chunk(s), {result.low_confidence_count} low-confidence",
+    )
+
+    # 6). Text Cleanup
+    result = clean_transcript(task_payload, result.segments)
+    logger.info(f"{file_name}: cleaned transcript ready ({result.fillers_removed_count} filler word(s) removed, {len(result.cleaned_text)} char(s))")
+    logger.debug(result.cleaned_text)
+    job_audit_log(
+        task_payload,
+        f"{file_name}: cleaned transcript ready ({result.fillers_removed_count} filler word(s) removed, "
+        f"{len(result.cleaned_text)} char(s))",
+    )
+
+    return result.cleaned_text
+
+
 def mp3_noise_processing_extract_txt(task_payload):
     """
-        Mp3 noise processing extract txt file
+        Reads mp3/m4a files from MinIO under task_payload["input_folder"], runs the
+        full audio processing pipeline (validation -> noise reduction -> VAD ->
+        segmentation -> Whisper transcription -> cleanup) using a local temp
+        directory for intermediate artifacts (required since ffmpeg/Whisper operate
+        on real file paths), then uploads only the final cleaned transcript to
+        MinIO under task_payload["output_folder"]/job_{job_id}_queue_{job_queue_id}/
+        {file_stem}/transcript.txt -- matching the pdf_highlighter/hurricane
+        pipelines' bucket-based input/output convention. The temp directory (and
+        everything in it -- noise-reduced audio, speech-only audio, chunks) is
+        removed after each file, whether it succeeds or fails.
+
+        One file's failure (decode error, Whisper crash, MinIO hiccup, etc.) is
+        logged and audited but does not abort the rest of the batch -- every other
+        file in input_folder still gets a chance to process.
     """
     input_folder = task_payload["input_folder"]
-    for file_name in os.listdir(input_folder):
-        input_file_path = os.path.join(input_folder, file_name)
-        # only mp3 file process
-        if os.path.isfile(input_file_path) and file_name.endswith(".mp3"):
-            logger.info(f"Processing {file_name}")
-            job_audit_log(task_payload, f"Processing {file_name}")
+    output_folder = task_payload["output_folder"]
 
-            # 1). Audio Validation
-            result = validate_audio(task_payload, input_file_path)
-            logger.info(f"Validation result for {file_name}: {result.status.value}")
-            logger.info(f"Metadata: {json.dumps(result.metadata.__dict__, indent=2)}")
-            if result.issues:
-                logger.info(f"Issue: ")
-                for issue in result.issues:
-                    logger.info(f" [{issue.severity.value.upper()}] {issue.code}: {issue.message}")
+    object_names = [
+        name for name in sorted(minio_client.list_objects(minio_bucket, prefix=input_folder))
+        if name.rsplit("/", 1)[-1].lower().endswith(AUDIO_EXTENSIONS)
+    ]
+    logger.info(f"Found {len(object_names)} audio file(s) under {minio_bucket}/{input_folder}")
+    job_audit_log(task_payload, f"Found {len(object_names)} audio file(s) under {minio_bucket}/{input_folder}")
 
-            if result.status != ValidationStatus.FAIL:
-                job_output_folder = (
-                    Path(task_payload["output_folder"])
-                    / f"job_{task_payload['job_id']}_queue_{task_payload['job_queue_id']}"
-                )
-                # One self-contained folder per input file — everything this
-                # file produces (noise-reduced audio, speech-only audio,
-                # chunks, transcript) lives together here.
-                file_output_folder = job_output_folder / Path(file_name).stem
-                file_output_folder.mkdir(parents=True, exist_ok=True)
+    succeeded = 0
+    skipped = 0
+    failed = 0
 
-                wav_name = f"{Path(file_name).stem}.wav"
-                output_file_path = file_output_folder / wav_name
+    for object_name in object_names:
+        file_name = object_name.rsplit("/", 1)[-1]
+        logger.info(f"Processing {file_name}")
+        job_audit_log(task_payload, f"Processing {file_name}")
 
-                # 2). Noise Reduction
-                result = reduce_noise(task_payload, input_file_path, output_file_path)
-                logger.info(f"Input loudness:  {result.input_rms_db:.1f} dBFS")
-                logger.info(f"Output loudness: {result.output_rms_db:.1f} dBFS")
-                logger.info(f"Noise reduced:   {result.noise_reduced_db:.1f} dB")
-                logger.info(f"Saved to: {result.output_path}")
+        audio_bytes = minio_client.get_object_bytes(minio_bucket, object_name)
+        if audio_bytes is None:
+            logger.error(f"Could not read {object_name} from MinIO bucket {minio_bucket}.")
+            job_audit_log(task_payload, f"Could not read {object_name} from MinIO bucket {minio_bucket}.")
+            failed += 1
+            continue
 
-                # 3). Voice Activity Detection (VAD)
-                vad_output_path = file_output_folder / "speech" / f"{Path(file_name).stem}_speech.wav"
-                result = detect_voice_activity(task_payload, result.output_path, vad_output_path)
-                logger.info(f"Speech ratio: {result.speech_ratio * 100:.1f}%, Segments: {len(result.segments)}")
+        tmp_dir = Path(tempfile.mkdtemp(prefix="mp3proc_"))
+        try:
+            input_file_path = tmp_dir / file_name
+            with open(input_file_path, "wb") as f:
+                f.write(audio_bytes)
 
-                for i, seg in enumerate(result.segments):
-                    logger.info(f"  [{i}] {seg.start_ms / 1000:.2f}s - {seg.end_ms / 1000:.2f}s")
+            # One self-contained temp folder per input file -- everything this
+            # file produces (noise-reduced audio, speech-only audio, chunks,
+            # transcript) lives together here until the final transcript is
+            # uploaded, then the whole temp folder is discarded.
+            file_output_folder = tmp_dir / "output" / Path(file_name).stem
+            file_output_folder.mkdir(parents=True, exist_ok=True)
 
-                # 4). Audio Segmentation
-                # NOTE: pass the NOISE-REDUCED audio path (the input VAD itself
-                # received) together with the segment boundaries VAD found —
-                # NOT vad_output_path, which is the concatenated speech-only
-                # file and no longer has silence gaps to safely split on.
-                noise_reduced_path = output_file_path
-                chunks_output_dir = file_output_folder / "chunks"
-                result = segment_audio(task_payload, noise_reduced_path, result.segments, chunks_output_dir)
-                logger.info(
-                    f"Created {len(result.chunks)} chunk(s), "
-                    f"{result.forced_split_count} forced split(s)"
-                )
-                for i, chunk in enumerate(result.chunks):
-                    flag = " [FORCED SPLIT]" if chunk.forced_split else ""
-                    logger.info(
-                        f"  [{i}] {chunk.start_ms / 1000:.2f}s - {chunk.end_ms / 1000:.2f}s "
-                        f"({chunk.duration_ms / 1000:.2f}s){flag}"
-                    )
+            cleaned_text = process_one_audio_file(task_payload, file_name, str(input_file_path), file_output_folder)
+            if cleaned_text is None:
+                skipped += 1
+                continue
 
-                # 5). Speech-to-Text (Whisper)
-                segmentation_result = result
-                result = transcribe_chunks(task_payload, segmentation_result.output_paths, segmentation_result.chunks)
-                logger.info(
-                    f"Transcribed {len(result.segments)} chunk(s), "
-                    f"{result.low_confidence_count} low-confidence"
-                )
+            object_prefix = "/".join([
+                output_folder,
+                f"job_{task_payload['job_id']}_queue_{task_payload['job_queue_id']}",
+                Path(file_name).stem,
+            ])
+            transcript_object_name = f"{object_prefix}/{Path(file_name).stem}.txt"
+            if not minio_client.upload_bytes(
+                    minio_bucket, transcript_object_name, cleaned_text.encode("utf-8"), content_type="text/plain"):
+                logger.error(f"Could not upload {transcript_object_name} to MinIO bucket {minio_bucket}.")
+                job_audit_log(task_payload, f"Could not upload {transcript_object_name} to MinIO bucket {minio_bucket}.")
+                failed += 1
+                continue
 
-                # 6). Text Cleanup
-                result = clean_transcript(task_payload, result.segments)
-                logger.info(f"Cleaned transcript ({result.fillers_removed_count} filler(s) removed):")
-                logger.info(result.cleaned_text)
+            logger.info(f"Saved cleaned transcript to: {minio_bucket}/{transcript_object_name}")
+            job_audit_log(task_payload, f"Saved cleaned transcript to: {minio_bucket}/{transcript_object_name}")
+            succeeded += 1
+        except Exception as e:
+            # Catch-all so one bad file (corrupt decode mid-stream, Whisper OOM,
+            # a transient MinIO error, etc.) doesn't abort the rest of the batch --
+            # logged with the full traceback for debugging, audited with just the
+            # message so the job's audit trail stays readable.
+            logger.exception(f"Unexpected error processing {file_name}: {e}")
+            job_audit_log(task_payload, f"Unexpected error processing {file_name}: {e}")
+            failed += 1
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
-                transcript_output_path = file_output_folder / "transcript" / f"{Path(file_name).stem}.txt"
-                ensure_parent_dir(transcript_output_path)
-                with open(transcript_output_path, "w") as f:
-                    f.write(result.cleaned_text)
-                logger.info(f"Saved cleaned transcript to: {transcript_output_path}")
-                job_audit_log(task_payload, f"Saved cleaned transcript to: {transcript_output_path}")
+    logger.info(
+        f"Batch complete: {len(object_names)} file(s) found, "
+        f"{succeeded} succeeded, {skipped} skipped (failed validation), {failed} failed"
+    )
+    job_audit_log(
+        task_payload,
+        f"Batch complete: {len(object_names)} file(s) found, "
+        f"{succeeded} succeeded, {skipped} skipped (failed validation), {failed} failed",
+    )
