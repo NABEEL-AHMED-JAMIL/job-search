@@ -1,17 +1,25 @@
 """
-MinIO Client
-@author: Nabeel Ahmed Jamil
+    MinIO Client
+    @author: Nabeel Ahmed Jamil
 """
 import io
 import os
 import logging
 import colorlog
 from datetime import timedelta
+
+from dotenv import load_dotenv
 from minio import Minio
 from minio.deleteobjects import DeleteObject
 from minio.error import S3Error
 
-# Configure colored logging
+# ------------------------------------------------------------------------------
+# Load environment variables
+# ------------------------------------------------------------------------------
+load_dotenv()
+# ------------------------------------------------------------------------------
+# Logging Configuration
+# ------------------------------------------------------------------------------
 handler = colorlog.StreamHandler()
 handler.setFormatter(
     colorlog.ColoredFormatter('%(log_color)s%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -50,7 +58,6 @@ class MinioClient:
     # ------------------------------------------------------------------
     # Bucket operations
     # ------------------------------------------------------------------
-
     def create_bucket(self, bucket_name):
         try:
             if not self.client.bucket_exists(bucket_name):
@@ -195,3 +202,23 @@ class MinioClient:
         except S3Error as e:
             logger.error("ERROR presigning bucket=%s object=%s: %s", bucket_name, object_name, e)
             return None
+
+if __name__ == '__main__':
+    # Example usage of MinioClient
+    minio_client = MinioClient()
+    # Create a bucket
+    minio_client.create_bucket("test-bucket")
+    # Upload a file
+    minio_client.upload_file("test-bucket", "example.txt", "example.txt")
+    # List objects in the bucket
+    objects = minio_client.list_objects("test-bucket")
+    print("Objects in bucket:", objects)
+    # Download the file
+    minio_client.download_file("test-bucket", "example.txt", "downloaded_example.txt")
+    # Get presigned URL
+    url = minio_client.get_presigned_url("test-bucket", "example.txt")
+    print("Presigned URL:", url)
+    # Delete the object
+    minio_client.delete_object("test-bucket", "example.txt")
+    # Delete the bucket
+    minio_client.delete_bucket("test-bucket")

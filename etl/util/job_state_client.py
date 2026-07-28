@@ -1,6 +1,6 @@
 """
-Job State Client
-@author: Nabeel Ahmed Jamil
+    Job State Client
+    @author: Nabeel Ahmed Jamil
 """
 import requests
 import logging

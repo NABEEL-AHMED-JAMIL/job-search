@@ -48,6 +48,7 @@ logger.setLevel(logging.INFO)
 job_state_client = JobStateClient(etl_event_url)
 minio_client = MinioClient()
 
+_SELECTOR_PATH_RE = re.compile(r"^page\[(\d+)\]/text\(\)\[(\d+):(\d+)\]$")
 
 def _build_retrying_session():
     """
@@ -58,7 +59,6 @@ def _build_retrying_session():
     session.mount("http://", HTTPAdapter(max_retries=retries))
     session.mount("https://", HTTPAdapter(max_retries=retries))
     return session
-
 
 def _call_api(task_payload, method, url, action, **kwargs):
     """
@@ -87,7 +87,6 @@ def _call_api(task_payload, method, url, action, **kwargs):
         job_audit_log(task_payload, f"{action} failed with status {response.status_code}")
         raise ValueError(f"{action} failed with status {response.status_code}")
 
-
 def authenticate_session(task_payload):
     """
         Log in with the session credentials in the task payload and return the auth response
@@ -109,7 +108,6 @@ def authenticate_session(task_payload):
         raise ValueError("Missing session information in task payload. Please provide username, password, and auth URL.")
 
     return _call_api(task_payload, "POST", auth_url, "Authentication", json={"username": username, "password": password})
-
 
 def fetch_highlighters_mapping(task_payload, pdf_highlighter, auth_payload):
     """
@@ -135,7 +133,6 @@ def fetch_highlighters_mapping(task_payload, pdf_highlighter, auth_payload):
         task_payload, "GET", field_mapping_url, "Field mapping fetch",
         headers={"Authorization": f"Bearer {organization_token}"}
     )
-
 
 def extract_fields_to_output(task_payload, pdf_highlighter, pdf_highlighter_payload):
     """
@@ -202,7 +199,6 @@ def extract_fields_to_output(task_payload, pdf_highlighter, pdf_highlighter_payl
     logger.info(f"Extraction complete. {len(rows)} file(s) written to {minio_bucket}/{output_object_name}")
     job_audit_log(task_payload, f"Extraction complete. {len(rows)} file(s) written to {minio_bucket}/{output_object_name}")
 
-
 def _is_truthy(value):
     """
         Method use to interpret useXpathFirst whether the field mapping API gives it as a
@@ -214,10 +210,6 @@ def _is_truthy(value):
     if isinstance(value, str):
         return value.strip().lower() == "true"
     return bool(value)
-
-
-_SELECTOR_PATH_RE = re.compile(r"^page\[(\d+)\]/text\(\)\[(\d+):(\d+)\]$")
-
 
 def _page_spans(fitz_page):
     """
@@ -235,7 +227,6 @@ def _page_spans(fitz_page):
                 if span["text"].strip():
                     spans.append(span["text"])
     return spans
-
 
 def extract_field_by_path(fitz_doc, path):
     """
@@ -260,7 +251,6 @@ def extract_field_by_path(fitz_doc, path):
 
     value = " ".join(spans[start:end + 1]).strip()
     return value or None
-
 
 def extract_fields_from_pdf(file_name, pdf_bytes, fields):
     """
@@ -295,7 +285,6 @@ def extract_fields_from_pdf(file_name, pdf_bytes, fields):
             row[label] = value
     return row
 
-
 def write_extracted_rows(output_prefix, rows, output_type):
     """
         Method use to upload extracted rows to targetOutputFileFolder in MinIO in the
@@ -324,7 +313,6 @@ def write_extracted_rows(output_prefix, rows, output_type):
         raise RuntimeError(f"Could not upload extracted output to {minio_bucket}/{object_name}")
     return object_name
 
-
 def job_audit_log(task_payload, message: str):
     """
         Log a message to the job audit log via the JobStateClient.
@@ -332,7 +320,6 @@ def job_audit_log(task_payload, message: str):
     time.sleep(0.1)
     job_state_client.job_audit_log(task_payload["job_id"], task_payload["job_queue_id"], message)
 
-# PDF Highlighter
 def pdf_highlighter_text_extraction_etl(task_payload):
     """
         Extract text from PDF files and highlight specific terms.

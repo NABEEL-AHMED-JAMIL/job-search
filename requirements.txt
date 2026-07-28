@@ -16,6 +16,7 @@ minio==7.2.20
 mutagen==1.48.1
 noisereduce==3.0.3
 numba==0.65.1
+redis==8.0.1
 # Pinned <=2.4 -- numba 0.65.1 (an openai-whisper dependency, via its word-timestamp
 # module) hard-requires numpy<=2.4 and fails to import on 2.5.x. 2.4.6 is the latest
 # release satisfying that constraint; verified compatible with scipy/pandas/torch here.

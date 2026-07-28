@@ -4,7 +4,7 @@ Utility functions for TPD (Third-Party Data) processing, including message deser
 import logging
 import colorlog
 import json
-
+# kafka-python package is required for this module to work
 from kafka import KafkaConsumer
 
 # ------------------------------------------------------------------------------
@@ -22,7 +22,6 @@ handler.setFormatter(
         },
     )
 )
-
 logger = colorlog.getLogger(__name__)
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
@@ -61,7 +60,6 @@ def deserialize_message(message):
         return None
     try:
         decoded = message.decode("utf-8")
-        # ALWAYS try JSON first
         try:
             return json.loads(decoded)
         except json.JSONDecodeError:

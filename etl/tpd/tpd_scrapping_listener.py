@@ -1,12 +1,14 @@
 """
-Kafka Listener for scrapping-topic (Production Style)
+    Kafka Listener for ETL Processing (Production Style)
+    Author: Nabeel Ahmed Jamil
 """
-from dotenv import load_dotenv
 import os
-
 import time
+import signal
 import logging
+import threading
 import colorlog
+from dotenv import load_dotenv
 from multiprocessing import Process
 from concurrent.futures import ThreadPoolExecutor
 # Kafka
@@ -14,12 +16,13 @@ from etl.tpd.tpd_kafka_config import create_consumer
 from etl.util.xml_parser import pipeline_xml_parser
 from etl.util.job_state_client import JobStateClient
 from etl.util.job_status import JobStatus
+
 # ------------------------------------------------------------------------------
-# Load environment variables
+# Load Environment
 # ------------------------------------------------------------------------------
 load_dotenv()
 # ------------------------------------------------------------------------------
-# Logging Configuration
+# Logging
 # ------------------------------------------------------------------------------
 handler = colorlog.StreamHandler()
 handler.setFormatter(
@@ -33,148 +36,159 @@ handler.setFormatter(
         },
     )
 )
-
 logger = colorlog.getLogger(__name__)
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 # ------------------------------------------------------------------------------
-# ENV DATA LOAD
+# Environment
 # ------------------------------------------------------------------------------
 etl_event_url = os.getenv("ETL_EVENT_URL")
 kafka_servers = os.getenv("KAFKA_SERVERS").split(",")
 kafka_scrapping_topic = os.getenv("KAFKA_SCRAPPING_TOPIC")
 scrapping_group_id = os.getenv("SCRAPPING_GROUP_ID")
 # ------------------------------------------------------------------------------
-# Thread Pool per process
+# Thread Configuration
 # ------------------------------------------------------------------------------
-MAX_WORKERS = 10
-# ------------------------------------------------------------------------------
-# Dependencies
-# ------------------------------------------------------------------------------
-job_state_client = JobStateClient(etl_event_url)
+MAX_WORKERS = 25
+# Prevent unlimited tasks waiting in memory
+MAX_QUEUE_SIZE = 50
+semaphore = threading.Semaphore(MAX_WORKERS + MAX_QUEUE_SIZE)
+shutdown_event = threading.Event()
 
 # ------------------------------------------------------------------------------
-# MAIN LISTENER (PROCESS LEVEL)
+# Graceful Shutdown
+# ------------------------------------------------------------------------------
+def shutdown_handler(signum, frame):
+    logger.info("Shutdown signal received")
+    shutdown_event.set()
+
+signal.signal(signal.SIGTERM, shutdown_handler)
+signal.signal(signal.SIGINT, shutdown_handler)
+
+# ------------------------------------------------------------------------------
+# Kafka Listener Process
 # ------------------------------------------------------------------------------
 def start_kafka_listener():
-    """
-        Kafka consumer running in a separate process.
-        Each process has its own thread pool.
-    """
     consumer = None
-
+    # Create dependencies inside process
+    job_state_client = JobStateClient(etl_event_url)
     try:
-        logger.info("Connecting Kafka: %s", ",".join(kafka_servers))
+        logger.info("Starting Kafka consumer")
         consumer = create_consumer(kafka_scrapping_topic, kafka_servers, scrapping_group_id)
-        logger.info("Kafka consumer started (process=%s)", id(consumer))
-        logger.info("Topic=%s Group=%s", kafka_scrapping_topic, scrapping_group_id)
-
-        # Thread pool inside each consumer process
+        logger.info("Kafka connected topic=%s group=%s",kafka_scrapping_topic, scrapping_group_id)
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            for message in consumer:
-                payload = message.value
-                if not payload:
+            while not shutdown_event.is_set():
+                message = consumer.poll(timeout_ms=1000)
+                if not message:
                     continue
-                # Submit task to thread pool (non-blocking Kafka loop)
-                executor.submit(execute_task, message, payload)
-
-    except KeyboardInterrupt:
-        logger.info("Listener stopped by user")
+                for _, records in message.items():
+                    for record in records:
+                        payload = record.value
+                        if not payload:
+                            continue
+                        # Control memory
+                        semaphore.acquire()
+                        executor.submit(execute_task_wrapper,record, payload, consumer, job_state_client)
     except Exception as ex:
-        logger.exception("Kafka listener error: %s", str(ex))
+        logger.exception("Kafka listener failed %s",str(ex))
     finally:
         if consumer:
             consumer.close()
             logger.info("Kafka consumer closed")
 
+# ------------------------------------------------------------------------------
+# Thread Wrapper
+# ------------------------------------------------------------------------------
+def execute_task_wrapper(message, payload, consumer, job_state_client):
+    try:
+        execute_task(message, payload, job_state_client)
+        # Commit only after success
+        consumer.commit()
+        logger.info("Kafka offset committed offset=%s",message.offset)
+    except Exception as ex:
+        logger.exception("Task failed %s",str(ex))
+    finally:
+        semaphore.release()
 
 # ------------------------------------------------------------------------------
-# Job Processing
+# ETL Task Processing
 # ------------------------------------------------------------------------------
-def execute_task(message, payload: dict):
-    """
-        Process a single job payload.
-    """
+def execute_task(message, payload, job_state_client):
+    job_id = None
+    job_queue_id = None
     try:
-        logger.info("Received msg partition=%s offset=%s", message.partition, message.offset)
-        # JobQueue
+        logger.info("Processing partition=%s offset=%s",message.partition, message.offset)
         job_id = payload.get("jobId")
         job_queue_id = payload.get("jobQueueId")
-        # TaskDetail
         pipeline_id = payload.get("pipelineId")
 
-        if not job_id or not job_queue_id:
-            raise ValueError("jobId or jobQueueId missing from payload")
-        elif not pipeline_id:
-            raise ValueError("pipelineId missing from payload")
+        if not job_id:
+            raise ValueError("jobId missing")
 
-        logger.info("Starting Job. jobId=%s jobQueueId=%s",job_id, job_queue_id)
-        update_job_status(job_id, job_queue_id, JobStatus.RUNNING,f"Job {job_id} is running.")
-        # passing payload bz we may need to extract more info payload
+        if not job_queue_id:
+            raise ValueError("jobQueueId missing")
+
+        if not pipeline_id:
+            raise ValueError("pipelineId missing")
+
+        update_job_status(job_state_client, job_id, job_queue_id, JobStatus.RUNNING,"Job started")
         task_payload = extract_task_payload(pipeline_id, payload)
-        logger.info("Processing Task Payload: %s", task_payload)
-
-        task_payload['job_id'] = job_id
-        task_payload['job_queue_id'] = job_queue_id
-        if pipeline_id == 'F768925':
-            # Imported lazily so a broken dependency chain in one task (e.g. mp3's
-            # whisper/numba stack) can't block the listener from starting at all.
-            from etl.tasks.pdf_highlighter_f768925 import pdf_highlighter_text_extraction_etl
+        task_payload["job_id"] = job_id
+        task_payload["job_queue_id"] = job_queue_id
+        # --------------------------------------------------
+        # Pipeline Router
+        # --------------------------------------------------
+        if pipeline_id == "F768924":
+            from etl.tasks.pdf_highligter_form_fill_F768924 import (pdf_highlighter_form_film)
+            pdf_highlighter_form_film(task_payload)
+        elif pipeline_id == "F768925":
+            from etl.tasks.pdf_highlighter_f768925 import (pdf_highlighter_text_extraction_etl)
             pdf_highlighter_text_extraction_etl(task_payload)
-        elif pipeline_id == 'F768926':
-            from etl.tasks.etl_hurricanes_f768926 import fetch_and_extract_all_seasons
+        elif pipeline_id == "F768926":
+            from etl.tasks.etl_hurricanes_f768926 import (fetch_and_extract_all_seasons)
             fetch_and_extract_all_seasons(task_payload)
-        elif pipeline_id == 'F768927':
-            from etl.tasks.mp3_noise_processing_extract_txt_f768927 import mp3_noise_processing_extract_txt
+        elif pipeline_id == "F768927":
+            from etl.tasks.mp3_noise_processing_extract_txt_f768927 import (mp3_noise_processing_extract_txt)
             mp3_noise_processing_extract_txt(task_payload)
+        else:
+            raise ValueError(f"Unknown pipeline {pipeline_id}")
 
-        update_job_status(job_id, job_queue_id, JobStatus.COMPLETED,f"Job {job_id} completed successfully.")
-        logger.info("Complete Job. jobId=%s jobQueueId=%s",job_id, job_queue_id)
+        update_job_status(job_state_client, job_id, job_queue_id, JobStatus.COMPLETED,"Job completed successfully")
     except Exception as ex:
-        logger.exception("Job failed. jobId=%s", job_id)
-        update_job_status(job_id, job_queue_id, JobStatus.FAILED, f"Job {job_id} failed due to {str(ex)}")
+        logger.exception("Job failed job_id=%s",job_id)
+        update_job_status(job_state_client, job_id, job_queue_id, JobStatus.FAILED, str(ex))
         raise
 
+# ------------------------------------------------------------------------------
+# Payload Parser
+# ------------------------------------------------------------------------------
+def extract_task_payload(pipeline_id, payload):
+    parser = pipeline_xml_parser.get(pipeline_id)
+    if not parser:
+        raise ValueError(f"No parser found for {pipeline_id}")
+    return parser(payload.get("taskPayload"))
 
-def extract_task_payload(pipeline_id, payload: dict):
-    """
-        Extract and parse task payload.
-    """
-    parsed_payload = pipeline_xml_parser[pipeline_id](payload.get("taskPayload"))
-    logger.info("Parsed Task Payload: %s", parsed_payload)
-    return parsed_payload
-
-# ==============================================================================
-# Utility Methods
-# ==============================================================================
-def update_job_status(job_id, job_queue_id, status, message):
-    """
-        Update job status.
-    """
-    time.sleep(0.2)  # Simulate some processing delay
+# ------------------------------------------------------------------------------
+# Job Status
+# ------------------------------------------------------------------------------
+def update_job_status(job_state_client, job_id, job_queue_id, status, message):
+    time.sleep(0.2)
     job_state_client.change_job_state(job_id, job_queue_id, status, message)
 
-
 # ------------------------------------------------------------------------------
-# PROCESS STARTER (SCALING LAYER)
+# Process Starter
 # ------------------------------------------------------------------------------
-def start_consumers(num_processes=3):
-    """
-        Start multiple Kafka consumer processes
-    """
+def start_consumers(num_processes=1):
     processes = []
     for i in range(num_processes):
-        p = Process(target=start_kafka_listener, name=f"consumer-{i}")
-        p.start()
-        processes.append(p)
-
-    for p in processes:
-        p.join()
-
+        process = Process(target=start_kafka_listener, name=f"consumer-{i}")
+        process.start()
+        processes.append(process)
+    for process in processes:
+        process.join()
 
 # ------------------------------------------------------------------------------
-# MAIN
+# Main
 # ------------------------------------------------------------------------------
 if __name__ == "__main__":
-    # 3 processes × 10 threads = 50 parallel workers
     start_consumers(num_processes=1)

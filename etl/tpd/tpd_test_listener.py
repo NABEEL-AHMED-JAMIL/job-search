@@ -1,15 +1,13 @@
 """
 Kafka Listener for test-topic (Production Style)
 """
-from dotenv import load_dotenv
 import os
-
 import time
 import logging
 import colorlog
+from dotenv import load_dotenv
 from multiprocessing import Process
 from concurrent.futures import ThreadPoolExecutor
-
 from etl.tpd.tpd_kafka_config import create_consumer
 from etl.util.xml_parser import tpd_test_task_payload_parser
 from etl.util.job_state_client import JobStateClient
@@ -35,11 +33,9 @@ handler.setFormatter(
         },
     )
 )
-
 logger = colorlog.getLogger(__name__)
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
-
 # ------------------------------------------------------------------------------
 # Constants
 # ------------------------------------------------------------------------------
@@ -47,12 +43,10 @@ etl_event_url = os.getenv("ETL_EVENT_URL")
 kafka_servers = os.getenv("KAFKA_SERVERS").split(",")
 kafka_test_topic = os.getenv("KAFKA_TEST_TOPIC")
 test_group_id = os.getenv("TEST_GROUP_ID")
-
 # ------------------------------------------------------------------------------
 # Thread Pool per process
 # ------------------------------------------------------------------------------
 MAX_WORKERS = 10
-
 # ------------------------------------------------------------------------------
 # Dependencies
 # ------------------------------------------------------------------------------
