@@ -152,7 +152,7 @@ def parse_924(xml_payload):
             "highlighter": {
                 "input_object_path": highlighter.find("input_object_path").text,
                 "form_uuid": highlighter.find("form_uuid").text,
-                "panel_url": highlighter.find("panel_url").text,
+                "panels_url": highlighter.find("panels_url").text,
                 "fields_url": highlighter.find("fields_url").text,
                 "submissions_url": highlighter.find("submissions_url").text,
             }

@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import re
 import time
 import logging
 import colorlog
@@ -75,13 +76,33 @@ def _call_api(task_payload, method, url, action, **kwargs):
     except Exception:
         payload = response.text
 
-    if response.status_code == 200:
+    if 200 <= response.status_code < 300:
         logger.info("%s succeeded", action)
         return payload["data"] if isinstance(payload, dict) else payload
     else:
         logger.error("FAILED: status=%s response=%s", response.status_code, response.text)
         job_audit_log(task_payload, f"{action} failed with status {response.status_code}")
         raise ValueError(f"{action} failed with status {response.status_code}")
+
+def _require(task_payload, values, error_message):
+    """
+        Fail fast with the same log+audit+raise sequence every required-config check in
+        this file uses, instead of repeating it at each call site.
+    """
+    if not all(values):
+        logger.error(error_message)
+        job_audit_log(task_payload, error_message)
+        raise ValueError(error_message)
+
+def _render_url(template, **params):
+    """
+        Fill a URL template's {placeholder} tokens -- shared by every panels_url/fields_url/
+        submissions_url construction instead of a repeated chain of .replace() calls.
+    """
+    rendered = template
+    for key, value in params.items():
+        rendered = rendered.replace("{" + key + "}", value)
+    return rendered
 
 def authenticate_session(task_payload, username, password, auth_url):
     """
@@ -94,6 +115,26 @@ def authenticate_session(task_payload, username, password, auth_url):
         task_payload, "POST", auth_url, f"Authentication for {username}",
         json={"username": username, "password": password}
     )
+
+def fetch_panels(task_payload, panels_url, token):
+    """
+        GET the panels for a form. Each panel dict may already come back with its own
+        'fields' array inlined -- callers should reuse that instead of calling fields_url
+        again for that panel.
+    """
+    return _call_api(
+        task_payload, "GET", panels_url, "Fetch form panels",
+        headers={"Authorization": f"Bearer {token}"}
+    ) or []
+
+def fetch_panel_fields(task_payload, fields_url, token):
+    """
+        GET the fields for a single panel.
+    """
+    return _call_api(
+        task_payload, "GET", fields_url, "Fetch panel fields",
+        headers={"Authorization": f"Bearer {token}"}
+    ) or []
 
 def fetch_pdf_extract_data(task_payload, input_object_path):
     """
@@ -114,8 +155,167 @@ def fetch_pdf_extract_data(task_payload, input_object_path):
         job_audit_log(task_payload, f"Could not parse input object {input_object_path} as JSON: {e}")
         raise ValueError(f"Could not parse input object {minio_bucket}/{input_object_path} as JSON.")
 
-def submissions_fill_form(payload):
-    pass
+def build_form_tree(task_payload, highlighter, organization_uuid, form_uuid, token):
+    """
+        Build the panels->fields tree for one user's session: fetch the form's panels with
+        panels_url, then for each panel either reuse its already-inlined 'fields' (skipping
+        the fields_url call and storing nothing further for it) or fetch them with
+        fields_url. organization_uuid/token come from that user's login_payload (set by
+        authenticate_session) -- both URLs are called with that user's bearer token.
+        <highlighter>
+            <panels_url>http://localhost:9999/v1/api/organizations/{organization_uuid}/forms/{form_uuid}/panels</panels_url>
+            <fields_url>http://localhost:9999/v1/api/organizations/{organization_uuid}/forms/{form_uuid}/panels/{panel_uuid}/fields</fields_url>
+        </highlighter>
+    """
+    panels_url_tpl = highlighter.get("panels_url")
+    fields_url_tpl = highlighter.get("fields_url")
+    _require(task_payload, [panels_url_tpl, fields_url_tpl], "Missing highlighter.panels_url/fields_url in task payload.")
+
+    panels_url = _render_url(panels_url_tpl, organization_uuid=organization_uuid, form_uuid=form_uuid)
+    panels = fetch_panels(task_payload, panels_url, token)
+
+    tree = []
+    for panel in panels:
+        panel_uuid = panel.get("uuid")
+        # Reuse already-inlined fields if the panels response gave us them -- otherwise
+        # fetch them individually. Either way, nothing extra is stored beyond this list.
+        if "fields" in panel:
+            fields = panel["fields"]
+        else:
+            fields_url = _render_url(
+                fields_url_tpl, organization_uuid=organization_uuid, form_uuid=form_uuid, panel_uuid=panel_uuid
+            )
+            fields = fetch_panel_fields(task_payload, fields_url, token)
+        tree.append({**panel, "fields": fields})
+
+    return tree
+
+def _coerce_field_value(field, text_value):
+    """
+        Turn an already-validated, non-blank extracted string into the submissions payload
+        fragment for this field's type -- {"valueNumber": ...} for NUMBER fields,
+        {"valueText": ...} for everything else (every other field type in this form
+        definition is free text).
+    """
+    if field.get("fieldType") == "NUMBER":
+        try:
+            numeric = float(text_value)
+        except (TypeError, ValueError):
+            raise ValueError(f"'{text_value}' is not a valid number")
+        if numeric.is_integer():
+            numeric = int(numeric)
+        return {"valueNumber": numeric}
+    return {"valueText": text_value}
+
+def validate_field_value(field, raw_value):
+    """
+        Validate one extracted value against its field definition (required, pattern,
+        minLength, maxLength), mirroring the frontend's own field-level validation.
+        Raises ValueError with a human-readable reason on the first rule that fails.
+        Returns None for a blank, non-required field (nothing to submit), otherwise the
+        submissions payload value fragment (e.g. {"valueText": ...}) for this field.
+    """
+    label = field.get("label") or field.get("fieldKey")
+    is_blank = raw_value is None or str(raw_value).strip() == ""
+
+    if is_blank:
+        if field.get("required"):
+            raise ValueError(f"'{label}' is required but has no extracted value")
+        return None
+
+    text_value = str(raw_value).strip()
+
+    pattern = field.get("pattern")
+    if pattern and not re.fullmatch(pattern, text_value):
+        raise ValueError(f"'{label}' value '{text_value}' does not match required pattern '{pattern}'")
+
+    min_length = field.get("minLength")
+    if min_length is not None and len(text_value) < min_length:
+        raise ValueError(f"'{label}' value '{text_value}' is shorter than minLength {min_length}")
+
+    max_length = field.get("maxLength")
+    if max_length is not None and len(text_value) > max_length:
+        raise ValueError(f"'{label}' value '{text_value}' is longer than maxLength {max_length}")
+
+    return _coerce_field_value(field, text_value)
+
+def build_submission_values(form_tree, row):
+    """
+        Validate every field across every panel in form_tree against `row` (one extracted
+        PDF record, keyed by the form field's fieldKey -- e.g. {"ticket_date": "02.02.2018",
+        "ticket_number": "113494", ...}) and build the submissions_url payload's "values"
+        list. Raises ValueError naming the first field that fails validation -- the caller
+        catches this, audit-logs it, and skips the whole row rather than submitting a
+        partially-invalid form.
+    """
+    values = []
+    for panel in form_tree:
+        for field in panel.get("fields", []):
+            value = validate_field_value(field, row.get(field.get("fieldKey")))
+            if value is None:
+                continue
+            values.append({"fieldUuid": field["uuid"], **value})
+    return values
+
+def submit_form(task_payload, submissions_url, token, values):
+    """
+        POST one filled-out, already-validated form submission to submissions_url.
+    """
+    return _call_api(
+        task_payload, "POST", submissions_url, "Form submission",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"values": values}
+    )
+
+def submissions_fill_form(task_payload, highlighter, form_uuid, extract_data, authenticated_sessions):
+    """
+        Entry point for the submit step: for every authenticated user and every extracted
+        PDF record, validate the record's values against that user's form_tree field
+        definitions (required/pattern/minLength/maxLength) and POST it to submissions_url.
+        A record that fails validation, or that the API rejects, is skipped -- logged via
+        job_audit_log so it shows up in the job's audit trail -- without stopping the rest
+        of the batch: both later rows for that user and later users still get processed.
+        <highlighter>
+            <submissions_url>http://localhost:9999/v1/api/organizations/{organization_uuid}/forms/{form_uuid}/submissions</submissions_url>
+        </highlighter>
+    """
+    submissions_url_tpl = highlighter.get("submissions_url")
+    _require(task_payload, [submissions_url_tpl], "Missing highlighter.submissions_url in task payload.")
+
+    submitted = 0
+    skipped = 0
+    for session in authenticated_sessions:
+        username = session.get("username")
+        organization_uuid = session["organizationUuid"]
+        token = session["token"]
+        form_tree = session.get("form_tree") or []
+        submissions_url = _render_url(submissions_url_tpl, organization_uuid=organization_uuid, form_uuid=form_uuid)
+
+        for row in extract_data:
+            file_name = row.get("file_name", "<unknown file>")
+
+            try:
+                values = build_submission_values(form_tree, row)
+            except ValueError as e:
+                logger.warning(f"Skipping {file_name} for {username}: {e}")
+                job_audit_log(task_payload, f"Skipping {file_name} for {username}: validation failed -- {e}")
+                skipped += 1
+                continue
+
+            try:
+                submit_form(task_payload, submissions_url, token, values)
+            except Exception as e:
+                # _call_api already audit-logged the failure detail -- just track/skip here.
+                logger.warning(f"Skipping {file_name} for {username}: submission failed ({e})")
+                skipped += 1
+                continue
+
+            submitted += 1
+            job_audit_log(task_payload, f"Submitted {file_name} for {username}")
+
+    logger.info(f"Submission complete: {submitted} submitted, {skipped} skipped.")
+    job_audit_log(task_payload, f"Submission complete: {submitted} submitted, {skipped} skipped.")
+    return {"submitted": submitted, "skipped": skipped}
 
 def job_audit_log(task_payload, message: str):
     """
@@ -144,6 +344,10 @@ def pdf_highlighter_form_film(task_payload):
         </session>
         <highlighter>
             <input_object_path>highlighter/output/job_1014_queue_1050/.../pdf_highlighter_extract_....json</input_object_path>
+            <form_uuid>46d0608b-cf1b-47f2-a9dd-bcd940ca2373</form_uuid>
+            <panels_url>http://localhost:9999/v1/api/organizations/{organization_uuid}/forms/{form_uuid}/panels</panels_url>
+            <fields_url>http://localhost:9999/v1/api/organizations/{organization_uuid}/forms/{form_uuid}/panels/{panel_uuid}/fields</fields_url>
+            <submissions_url>http://localhost:9999/v1/api/organizations/{organization_uuid}/forms/{form_uuid}/submissions</submissions_url>
         </highlighter>
     """
     highlighter = task_payload.get("highlighter", {})
@@ -213,10 +417,15 @@ def pdf_highlighter_form_film(task_payload):
 
     logger.info(f"Authenticated {len(authenticated_sessions)}/{len(accounts_df)} account(s).")
     job_audit_log(task_payload, f"Authenticated {len(authenticated_sessions)}/{len(accounts_df)} account(s).")
-    # Next step (guided later): for each entry in authenticated_sessions, call the
-    # panel/fields/submissions APIs with that user's info + token, against extract_data.
-    return {
-        "extract_data": extract_data,
-        "authenticated_sessions": authenticated_sessions
-    }
 
+    # Build the panels->fields tree for each authenticated session, using that user's own
+    # organizationUuid + token from their login_payload.
+    for session in authenticated_sessions:
+        session["form_tree"] = build_form_tree(
+            task_payload, highlighter, session["organizationUuid"], form_uuid, session["token"]
+        )
+        logger.debug(f"Built form tree for {session['username']}: {len(session['form_tree'])} panel(s)")
+
+    # Validate every extracted record against each user's form_tree and submit it;
+    # invalid/rejected records are skipped (and audit-logged) without stopping the batch.
+    submissions_fill_form(task_payload, highlighter, form_uuid, extract_data, authenticated_sessions)
