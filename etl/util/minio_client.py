@@ -4,14 +4,13 @@
 """
 import io
 import os
-import logging
-import colorlog
 from datetime import timedelta
 
 from dotenv import load_dotenv
 from minio import Minio
 from minio.deleteobjects import DeleteObject
 from minio.error import S3Error
+from etl.util.logging_config import get_logger
 
 # ------------------------------------------------------------------------------
 # Load environment variables
@@ -20,20 +19,7 @@ load_dotenv()
 # ------------------------------------------------------------------------------
 # Logging Configuration
 # ------------------------------------------------------------------------------
-handler = colorlog.StreamHandler()
-handler.setFormatter(
-    colorlog.ColoredFormatter('%(log_color)s%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    log_colors={
-        'DEBUG': 'cyan',
-        'INFO': 'white',
-        'WARNING': 'yellow',
-        'ERROR': 'red',
-        'CRITICAL': 'red,bg_white',
-    }
-))
-logger = colorlog.getLogger(__name__)
-logger.addHandler(handler)
-logger.setLevel(logging.INFO)
+logger = get_logger(__name__)
 
 
 class MinioClient:

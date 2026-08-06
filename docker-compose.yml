@@ -1,0 +1,65 @@
+# NOTE: values below are hardcoded rather than ${VAR:-default} interpolation on purpose --
+# Docker Compose auto-loads the .env file that already sits in this same directory (written
+# for the host-venv workflow, e.g. KAFKA_SERVERS=localhost:9093) to resolve ${VAR} references,
+# and that host-facing value would silently win over any inline default here, since ":-default"
+# only applies when the variable is completely unset. Inside a container "localhost" means the
+# container itself, not the host, so these need host.docker.internal unconditionally.
+services:
+
+  audio-extract-service:
+    build: .
+    image: job-search-app
+    container_name: audio_extract_service
+    restart: always
+    ports:
+      - "8100:8100"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      ETL_EVENT_URL: http://host.docker.internal:9098/api/v1
+      OLLAMA_URL: http://host.docker.internal:11434
+      MINIO_ENDPOINT: host.docker.internal:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin123
+      MINIO_BUCKET_NAME: etl-bucket
+      MINIO_SECURE: "false"
+    command: ["uvicorn", "etl.service.audio_extract_service:app", "--host", "0.0.0.0", "--port", "8100", "--workers", "1"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8100/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  tpd-scrapping-listener:
+    build: .
+    image: job-search-app
+    container_name: tpd_scrapping_listener
+    restart: always
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Kafka isn't reachable via host.docker.internal:9093 for a *containerized* client --
+    # it advertises EXTERNAL://localhost:9093 (correct for the host-venv workflow only) and
+    # INTERNAL://kafka:9092 (for containers on its own network). Kafka is actually part of
+    # process's docker-compose stack, on the process_default network -- join that instead of
+    # touching Kafka's own config (zero risk to the existing host-based consumers).
+    networks:
+      - default
+      - process_default
+    environment:
+      ETL_EVENT_URL: http://host.docker.internal:9098/api/v1
+      OLLAMA_URL: http://host.docker.internal:11434
+      MINIO_ENDPOINT: host.docker.internal:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin123
+      MINIO_BUCKET_NAME: etl-bucket
+      MINIO_SECURE: "false"
+      KAFKA_SERVERS: kafka:9092
+      KAFKA_SCRAPPING_TOPIC: scrapping-topic
+      SCRAPPING_GROUP_ID: scrapping-group
+      JOBSEARCH_USER_AGENT: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    command: ["python", "-m", "etl.tpd.tpd_scrapping_listener"]
+
+networks:
+  process_default:
+    external: true

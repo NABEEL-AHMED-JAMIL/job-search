@@ -95,7 +95,7 @@
 """
 
 from __future__ import annotations
-import logging
+import threading
 import time
 
 import json
@@ -103,7 +103,6 @@ import shutil
 import tempfile
 from pathlib import Path
 
-import colorlog
 import os
 from dotenv import load_dotenv  # To load environment variables, such as API keys
 from dataclasses import dataclass, field
@@ -121,25 +120,12 @@ import re
 # job status
 from etl.util.job_state_client import JobStateClient
 from etl.util.minio_client import MinioClient
+from etl.util.logging_config import get_logger
 
 # ------------------------------------------------------------------------------
 # Logging Configuration
 # ------------------------------------------------------------------------------
-handler = colorlog.StreamHandler()
-handler.setFormatter(
-    colorlog.ColoredFormatter("%(log_color)s%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        log_colors={
-            "DEBUG": "cyan",
-            "INFO": "white",
-            "WARNING": "yellow",
-            "ERROR": "red",
-            "CRITICAL": "red,bg_white",
-        },
-    )
-)
-logger = colorlog.getLogger(__name__)
-logger.addHandler(handler)
-logger.setLevel(logging.INFO)
+logger = get_logger(__name__)
 # ------------------------------------------------------------------------------
 # Load environment variables
 # ------------------------------------------------------------------------------
@@ -341,6 +327,17 @@ class CleanupResult:
     cleaned_text: str
     cleaned_segments: list[str]  # per-chunk cleaned text, same order as input
     fillers_removed_count: int
+
+@dataclass
+class TimestampedSegment:
+    start_ms: int
+    end_ms: int
+    text: str
+
+@dataclass
+class AudioTranscriptOutput:
+    cleaned_text: str  # the whole transcript merged into one block, as before
+    segments: list[TimestampedSegment]  # per-chunk cleaned text with timing, empty-text chunks omitted
 
 # ---------------------------------------------------------------------------
 # Validation function
@@ -956,6 +953,14 @@ def force_split_segment(start_ms, end_ms, config):
 # Loaded once per process — model weights are sizeable; avoid reloading per file.
 _whisper_model = None
 _whisper_device = None
+# openai-whisper's decode loop keeps its KV-cache as per-call mutable state on the model's
+# own attention modules (via forward hooks keyed by module identity, not by request) -- it was
+# never made safe for two .transcribe() calls to run concurrently against the same model
+# instance. audio_extract_service.py handles requests on a thread pool, so without this lock,
+# two audio files transcribing at the same time corrupt each other's KV-cache and crash with
+# something like "KeyError: Linear(...)" or "cannot reshape tensor of 0 elements" -- neither
+# of which has anything to do with the actual audio content of either request.
+_whisper_transcribe_lock = threading.Lock()
 
 def get_whisper_model(config: WhisperConfig = WhisperConfig()):
     global _whisper_model, _whisper_device
@@ -984,17 +989,18 @@ def transcribe_chunks(
 
     for i, (chunk_path, chunk) in enumerate(zip(chunk_paths, chunks)):
         logger.info(f"Transcribing chunk {i}: {chunk_path}")
-        whisper_result = model.transcribe(
-            str(chunk_path),
-            language=config.LANGUAGE,
-            temperature=config.TEMPERATURE,
-            condition_on_previous_text=config.CONDITION_ON_PREVIOUS_TEXT,
-            # Whisper defaults to fp16=True and silently falls back to fp32 on
-            # CPU, emitting a UserWarning every call. Deciding this explicitly
-            # from the model's actual device avoids the warning without
-            # silencing it globally (which could hide unrelated warnings).
-            fp16=(_whisper_device == "cuda"),
-        )
+        with _whisper_transcribe_lock:
+            whisper_result = model.transcribe(
+                str(chunk_path),
+                language=config.LANGUAGE,
+                temperature=config.TEMPERATURE,
+                condition_on_previous_text=config.CONDITION_ON_PREVIOUS_TEXT,
+                # Whisper defaults to fp16=True and silently falls back to fp32 on
+                # CPU, emitting a UserWarning every call. Deciding this explicitly
+                # from the model's actual device avoids the warning without
+                # silencing it globally (which could hide unrelated warnings).
+                fp16=(_whisper_device == "cuda"),
+            )
 
         raw_text = whisper_result["text"].strip()
 
@@ -1222,24 +1228,31 @@ def process_one_audio_file(task_payload, file_name, input_file_path, file_output
 
     # 5). Speech-to-Text (Whisper)
     segmentation_result = result
-    result = transcribe_chunks(task_payload, segmentation_result.output_paths, segmentation_result.chunks)
-    logger.info(f"{file_name}: transcribed {len(result.segments)} chunk(s), {result.low_confidence_count} low-confidence")
+    transcription_result = transcribe_chunks(task_payload, segmentation_result.output_paths, segmentation_result.chunks)
+    logger.info(f"{file_name}: transcribed {len(transcription_result.segments)} chunk(s), {transcription_result.low_confidence_count} low-confidence")
     job_audit_log(
         task_payload,
-        f"{file_name}: transcribed {len(result.segments)} chunk(s), {result.low_confidence_count} low-confidence",
+        f"{file_name}: transcribed {len(transcription_result.segments)} chunk(s), {transcription_result.low_confidence_count} low-confidence",
     )
 
     # 6). Text Cleanup
-    result = clean_transcript(task_payload, result.segments)
-    logger.info(f"{file_name}: cleaned transcript ready ({result.fillers_removed_count} filler word(s) removed, {len(result.cleaned_text)} char(s))")
-    logger.debug(result.cleaned_text)
+    cleanup_result = clean_transcript(task_payload, transcription_result.segments)
+    logger.info(f"{file_name}: cleaned transcript ready ({cleanup_result.fillers_removed_count} filler word(s) removed, {len(cleanup_result.cleaned_text)} char(s))")
+    logger.debug(cleanup_result.cleaned_text)
     job_audit_log(
         task_payload,
-        f"{file_name}: cleaned transcript ready ({result.fillers_removed_count} filler word(s) removed, "
-        f"{len(result.cleaned_text)} char(s))",
+        f"{file_name}: cleaned transcript ready ({cleanup_result.fillers_removed_count} filler word(s) removed, "
+        f"{len(cleanup_result.cleaned_text)} char(s))",
     )
 
-    return result.cleaned_text
+    # Pair each chunk's cleaned text back up with its original timing so callers that want a
+    # timestamped transcript (e.g. the ad-hoc Audio Extract Service) don't need to re-derive it.
+    timestamped_segments = [
+        TimestampedSegment(start_ms=seg.start_ms, end_ms=seg.end_ms, text=cleaned)
+        for seg, cleaned in zip(transcription_result.segments, cleanup_result.cleaned_segments)
+        if cleaned
+    ]
+    return AudioTranscriptOutput(cleaned_text=cleanup_result.cleaned_text, segments=timestamped_segments)
 
 
 def mp3_noise_processing_extract_txt(task_payload):
@@ -1298,8 +1311,8 @@ def mp3_noise_processing_extract_txt(task_payload):
             file_output_folder = tmp_dir / "output" / Path(file_name).stem
             file_output_folder.mkdir(parents=True, exist_ok=True)
 
-            cleaned_text = process_one_audio_file(task_payload, file_name, str(input_file_path), file_output_folder)
-            if cleaned_text is None:
+            transcript_output = process_one_audio_file(task_payload, file_name, str(input_file_path), file_output_folder)
+            if transcript_output is None:
                 skipped += 1
                 continue
 
@@ -1310,7 +1323,7 @@ def mp3_noise_processing_extract_txt(task_payload):
             ])
             transcript_object_name = f"{object_prefix}/{Path(file_name).stem}.txt"
             if not minio_client.upload_bytes(
-                    minio_bucket, transcript_object_name, cleaned_text.encode("utf-8"), content_type="text/plain"):
+                    minio_bucket, transcript_object_name, transcript_output.cleaned_text.encode("utf-8"), content_type="text/plain"):
                 logger.error(f"Could not upload {transcript_object_name} to MinIO bucket {minio_bucket}.")
                 job_audit_log(task_payload, f"Could not upload {transcript_object_name} to MinIO bucket {minio_bucket}.")
                 failed += 1

@@ -3,8 +3,6 @@ Kafka Listener for test-topic (Production Style)
 """
 import os
 import time
-import logging
-import colorlog
 from dotenv import load_dotenv
 from multiprocessing import Process
 from concurrent.futures import ThreadPoolExecutor
@@ -12,6 +10,7 @@ from etl.tpd.tpd_kafka_config import create_consumer
 from etl.util.xml_parser import tpd_test_task_payload_parser
 from etl.util.job_state_client import JobStateClient
 from etl.util.job_status import JobStatus
+from etl.util.logging_config import get_logger
 
 # ------------------------------------------------------------------------------
 # Load environment variables
@@ -20,22 +19,7 @@ load_dotenv()
 # ------------------------------------------------------------------------------
 # Logging Configuration
 # ------------------------------------------------------------------------------
-handler = colorlog.StreamHandler()
-handler.setFormatter(
-    colorlog.ColoredFormatter(
-        "%(log_color)s%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        log_colors={
-            "DEBUG": "cyan",
-            "INFO": "white",
-            "WARNING": "yellow",
-            "ERROR": "red",
-            "CRITICAL": "red,bg_white",
-        },
-    )
-)
-logger = colorlog.getLogger(__name__)
-logger.addHandler(handler)
-logger.setLevel(logging.INFO)
+logger = get_logger(__name__)
 # ------------------------------------------------------------------------------
 # Constants
 # ------------------------------------------------------------------------------

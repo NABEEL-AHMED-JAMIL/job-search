@@ -3,8 +3,6 @@ import json
 import os
 import re
 import time
-import logging
-import colorlog
 import pandas as pd
 import requests
 from requests.adapters import HTTPAdapter
@@ -13,6 +11,7 @@ from dotenv import load_dotenv
 # class imports
 from etl.util.job_state_client import JobStateClient
 from etl.util.minio_client import MinioClient
+from etl.util.logging_config import get_logger
 
 # ------------------------------------------------------------------------------
 # Load environment variables
@@ -26,21 +25,7 @@ minio_bucket = os.getenv("MINIO_BUCKET_NAME", "etl-bucket")
 # ------------------------------------------------------------------------------
 # Logging Configuration
 # ------------------------------------------------------------------------------
-handler = colorlog.StreamHandler()
-handler.setFormatter(
-    colorlog.ColoredFormatter("%(log_color)s%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        log_colors={
-            "DEBUG": "cyan",
-            "INFO": "white",
-            "WARNING": "yellow",
-            "ERROR": "red",
-            "CRITICAL": "red,bg_white",
-        },
-    )
-)
-logger = colorlog.getLogger(__name__)
-logger.addHandler(handler)
-logger.setLevel(logging.INFO)
+logger = get_logger(__name__)
 # ------------------------------------------------------------------------------
 # Dependencies
 # ------------------------------------------------------------------------------

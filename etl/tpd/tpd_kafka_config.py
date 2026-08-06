@@ -1,30 +1,15 @@
 """
 Utility functions for TPD (Third-Party Data) processing, including message deserialization and logging setup.
 """
-import logging
-import colorlog
 import json
 # kafka-python package is required for this module to work
 from kafka import KafkaConsumer
+from etl.util.logging_config import get_logger
 
 # ------------------------------------------------------------------------------
 # Logging Configuration
 # ------------------------------------------------------------------------------
-handler = colorlog.StreamHandler()
-handler.setFormatter(
-    colorlog.ColoredFormatter("%(log_color)s%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        log_colors={
-            "DEBUG": "cyan",
-            "INFO": "white",
-            "WARNING": "yellow",
-            "ERROR": "red",
-            "CRITICAL": "red,bg_white",
-        },
-    )
-)
-logger = colorlog.getLogger(__name__)
-logger.addHandler(handler)
-logger.setLevel(logging.INFO)
+logger = get_logger(__name__)
 
 # ==============================================================================
 # Kafka Consumer
