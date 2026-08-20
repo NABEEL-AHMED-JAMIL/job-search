@@ -21,12 +21,6 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from etl.service.image_extract import IMAGE_EXTENSIONS, extract_text_from_image
-from etl.service.media_extract import (
-    VIDEO_EXTENSIONS,
-    download_youtube_audio,
-    extract_audio_from_video,
-    is_youtube_url,
-)
 from etl.tasks.mp3_noise_processing_extract_txt_f768927 import (
     AUDIO_EXTENSIONS,
     ValidationConfig,
@@ -43,11 +37,6 @@ app = FastAPI(title="Audio Extract Service")
 class BucketExtractRequest(BaseModel):
     bucket: str
     key: str
-    timestamps: bool = False
-
-
-class YoutubeExtractRequest(BaseModel):
-    url: str
     timestamps: bool = False
 
 
@@ -129,44 +118,6 @@ def extract_bucket(payload: BucketExtractRequest):
         raise
     except Exception as e:
         logger.exception("Bucket extraction failed: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
-
-@app.post("/extract/video-upload")
-async def extract_video_upload(file: UploadFile = File(...), timestamps: bool = Form(False)):
-    _validate_extension(file.filename, VIDEO_EXTENSIONS)
-    tmp_dir = Path(tempfile.mkdtemp(prefix="adhoc_video_"))
-    try:
-        video_path = tmp_dir / file.filename
-        video_path.write_bytes(await file.read())
-        audio_path = tmp_dir / f"{video_path.stem}.mp3"
-        extract_audio_from_video(str(video_path), str(audio_path))
-        return {"transcript": _run_pipeline(audio_path.name, audio_path, timestamps)}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("Video extraction failed: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
-
-@app.post("/extract/youtube")
-def extract_youtube(payload: YoutubeExtractRequest):
-    if not is_youtube_url(payload.url):
-        raise HTTPException(status_code=400, detail="Not a recognized YouTube URL.")
-    tmp_dir = Path(tempfile.mkdtemp(prefix="adhoc_youtube_"))
-    try:
-        audio_path = Path(download_youtube_audio(payload.url, str(tmp_dir)))
-        return {"transcript": _run_pipeline(audio_path.name, audio_path, payload.timestamps)}
-    except HTTPException:
-        raise
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.exception("YouTube extraction failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)

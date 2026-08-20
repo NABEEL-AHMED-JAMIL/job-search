@@ -965,7 +965,17 @@ _whisper_transcribe_lock = threading.Lock()
 def get_whisper_model(config: WhisperConfig = WhisperConfig()):
     global _whisper_model, _whisper_device
     if _whisper_model is None:
-        _whisper_device = "cuda" if torch.cuda.is_available() else "cpu"
+        # mps = Apple Silicon GPU (PyTorch's Metal backend). Only ever available when this
+        # process runs natively on macOS -- a Docker container on Mac runs inside a Linux VM
+        # with no path to Metal, so torch.backends.mps.is_available() is always False there
+        # even on Apple Silicon hardware. fp16 stays off for mps (see the fp16= call below),
+        # same as cpu -- openai-whisper's fp16 path is CUDA-specific and unstable on MPS.
+        if torch.cuda.is_available():
+            _whisper_device = "cuda"
+        elif torch.backends.mps.is_available():
+            _whisper_device = "mps"
+        else:
+            _whisper_device = "cpu"
         logger.info(f"Loading Whisper model: {config.MODEL_SIZE} (device={_whisper_device})")
         _whisper_model = whisper.load_model(config.MODEL_SIZE, device=_whisper_device)
     return _whisper_model

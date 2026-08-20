@@ -135,6 +135,12 @@ def execute_task(message, payload, job_state_client):
         elif pipeline_id == "F768927":
             from etl.tasks.mp3_noise_processing_extract_txt_f768927 import (mp3_noise_processing_extract_txt)
             mp3_noise_processing_extract_txt(task_payload)
+        elif pipeline_id == "F768920":
+            from etl.tasks.zanium_firebase_data_export_f768920 import (zanium_firebase_data_export)
+            zanium_firebase_data_export(task_payload)
+        elif pipeline_id == "F76800":
+            from etl.tasks.send_email_batch_f76800 import (send_email_batch)
+            send_email_batch(task_payload)
         else:
             raise ValueError(f"Unknown pipeline {pipeline_id}")
 

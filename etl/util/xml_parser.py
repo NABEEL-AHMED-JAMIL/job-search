@@ -145,6 +145,68 @@ def parse_924(xml_payload):
         logger.exception("Failed to parse pipeline config XML")
         return None
 
+def parse_920(xml_payload):
+    """
+        Method use to parse F768920
+        <?xml version="1.0" encoding="UTF-8" standalone="no"?>
+        <pipeline>
+            <bucket>zanium-bucket</bucket>
+            <credential>zanium-dev/myConfig.json</credential>
+            <extracted_data>zanium-dev/data/</extracted_data>
+            <target_type>CSV</target_type>
+            <target_table_config>
+                <tables>users</tables>
+            </target_table_config>
+        </pipeline>
+    """
+    try:
+        root = ET.fromstring(xml_payload)
+        target_table_config = root.find("target_table_config")
+        tables = []
+        if target_table_config is not None:
+            tables = [table_el.text.strip() for table_el in target_table_config.findall("tables") if table_el.text]
+        return {
+            "id": "F768920",
+            "bucket": root.find("bucket").text,
+            "credential": root.find("credential").text,
+            "extracted_data": root.find("extracted_data").text,
+            "target_type": root.find("target_type").text,
+            "target_table_config": tables
+        }
+    except Exception:
+        logger.exception("Failed to parse task payload XML")
+        return None
+
+def parse_76800(xml_payload):
+    """
+        Method use to parse F76800
+        <?xml version="1.0" encoding="UTF-8" standalone="no"?>
+        <pipeline>
+            <email_config_uuid>50240e3f-45e3-466a-be44-ad1503d7c9ff</email_config_uuid>
+            <recipients_bucket>etl-bucket</recipients_bucket>
+            <recipients_object>email-batch/input/recipients.csv</recipients_object>
+        </pipeline>
+
+        email_config_uuid is just the submission's uuid -- NOT a full URL. The full
+        fetchSubmissionByUuid URL is built at runtime from ETL_EVENT_URL (env-configured
+        per execution environment: host.docker.internal inside a container, localhost for
+        the host-venv workflow), since a URL baked into stored pipeline config would only
+        be correct for whichever environment happened to write it.
+    """
+    try:
+        root = ET.fromstring(xml_payload)
+        recipients_bucket_el = root.find("recipients_bucket")
+        recipients_object_el = root.find("recipients_object")
+        return {
+            "id": "F76800",
+            "email_config_uuid": root.find("email_config_uuid").text,
+            "recipients_bucket": recipients_bucket_el.text if recipients_bucket_el is not None else None,
+            "recipients_object": recipients_object_el.text if recipients_object_el is not None else None
+        }
+    except Exception:
+        logger.exception("Failed to parse task payload XML")
+        return None
+
 def parse_923(xml_payload):
     """
         Method use to parse F768923
@@ -186,7 +248,9 @@ pipeline_xml_parser = {
     'F768925': parse_925,
     'F768924': parse_924,
     'F768923': parse_923,
-    'F768922': parse_922
+    'F768922': parse_922,
+    'F768920': parse_920,
+    'F76800': parse_76800
 }
 
 if __name__ == '__main__':

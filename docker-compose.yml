@@ -58,6 +58,16 @@ services:
       KAFKA_SCRAPPING_TOPIC: scrapping-topic
       SCRAPPING_GROUP_ID: scrapping-group
       JOBSEARCH_USER_AGENT: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+      # v4_backend -- a separate local Postgres (Homebrew postgresql@18 on the host,
+      # port 5432) that the F768920 pipeline imports Firebase users into. Reached via
+      # host.docker.internal like the other host-side services above; the host's
+      # pg_hba.conf trusts 127.0.0.1 and Docker Desktop's proxy makes this appear as
+      # loopback traffic to Postgres, so no extra pg_hba changes were needed.
+      V4_BACKEND_HOST: host.docker.internal
+      V4_BACKEND_PORT: "5432"
+      V4_BACKEND_DB: v4_backend
+      V4_BACKEND_USER: nabeel.amd93
+      V4_BACKEND_PASSWORD: admin
     command: ["python", "-m", "etl.tpd.tpd_scrapping_listener"]
 
 networks:
