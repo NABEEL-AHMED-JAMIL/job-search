@@ -76,6 +76,28 @@ services:
       V4_BACKEND_PASSWORD: admin
     command: ["python", "-m", "etl.tpd.tpd_scrapping_listener"]
 
+  # The test-loop consumer. Its pipeline is simulated work -- a counted loop with a short
+  # sleep and one audit-log callback per iteration -- so it exercises dispatch, concurrency
+  # and the callback path at a duration we choose, without depending on any external site.
+  # Runs 3 processes x 10 threads, so one container is 30 parallel workers.
+  tpd-test-listener:
+    build: .
+    image: job-search-app
+    container_name: tpd_test_listener
+    restart: always
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - default
+      - process_default
+    environment:
+      ETL_EVENT_URL: http://host.docker.internal:9098/api/v1
+      WORKER_CALLBACK_TOKEN: ${WORKER_CALLBACK_TOKEN:-}
+      KAFKA_SERVERS: kafka:9092
+      KAFKA_TEST_TOPIC: test-topic
+      TEST_GROUP_ID: test-group
+    command: ["python", "-m", "etl.tpd.tpd_test_listener"]
+
 networks:
   process_default:
     external: true

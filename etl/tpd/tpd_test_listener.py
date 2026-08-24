@@ -94,9 +94,12 @@ def execute_task(payload: dict):
     """
         Process a single job payload.
     """
-    job_queue = payload.get("jobQueue", {})
-    job_id = job_queue.get("jobId")
-    job_queue_id = job_queue.get("jobQueueId")
+    # The backend publishes these at the top level, the same as every other listener reads
+    # them. Reading them from a nested "jobQueue" object -- which is not in the message --
+    # meant every message was rejected before any work started, so this loop had never
+    # actually run against a real dispatch.
+    job_id = payload.get("jobId")
+    job_queue_id = payload.get("jobQueueId")
 
     if not job_id or not job_queue_id:
         raise ValueError("jobId or jobQueueId missing from payload")
@@ -119,10 +122,8 @@ def extract_task_payload(payload: dict) -> dict:
     """
         Extract and parse task payload.
     """
-    task_payload_xml = (
-        payload.get("taskDetail", {})
-        .get("taskPayload", {})
-    )
+    # Also top level, as tpd_scrapping_listener reads it.
+    task_payload_xml = payload.get("taskPayload")
     parsed_payload = tpd_test_task_payload_parser(task_payload_xml)
     logger.info("Parsed Task Payload: %s", parsed_payload)
     return parsed_payload
