@@ -2,6 +2,8 @@
     Job State Client
     @author: Nabeel Ahmed Jamil
 """
+import os
+
 import requests
 from etl.util.logging_config import get_logger
 
@@ -14,6 +16,16 @@ class JobStateClient:
     def __init__(self, base_url):
         self.base_url = base_url
 
+    @staticmethod
+    def _auth_headers():
+        """Shared secret the backend requires on /changeState and /addLogs (see NotifyResetApi).
+        These callbacks sit outside the JWT chain because workers have no user session, so this
+        header is what distinguishes a real worker from anyone else who can reach the port.
+        Absent, the header is simply omitted -- a backend with no token configured still accepts
+        the call, which keeps an un-migrated deployment working."""
+        token = os.getenv("WORKER_CALLBACK_TOKEN", "").strip()
+        return {"X-Worker-Token": token} if token else {}
+
     def change_job_state(self, job_id, job_queue_id, job_status, message):
         """
             job_status: Running | Failed | Completed
@@ -24,7 +36,7 @@ class JobStateClient:
             "jobStatusMessage": message
         }
         try:
-            response = requests.post(url, json=payload)
+            response = requests.post(url, json=payload, headers=self._auth_headers())
             if response.status_code == 200:
                 try:
                     logger.info("SUCCESS: %s", response.json())
@@ -53,7 +65,7 @@ class JobStateClient:
             "jobStatusMessage": message
         }
         try:
-            response = requests.post(url, json=payload)
+            response = requests.post(url, json=payload, headers=self._auth_headers())
             if response.status_code == 200:
                 try:
                     logger.info("SUCCESS: %s", response.json())
