@@ -24,8 +24,10 @@ def create_consumer(topic_name, bootstrap_services, group_id) -> KafkaConsumer:
         group_id=group_id,
         # Deserialization
         value_deserializer=deserialize_message,
-        # Offset management
-        enable_auto_commit=True,
+        # Offset management. Auto-commit marks a message done when it is polled, which is
+        # wrong for any consumer that hands the work to a thread pool: the record is recorded
+        # as processed before it has been. Callers commit once the work completes instead.
+        enable_auto_commit=False,
         auto_offset_reset="earliest",
         # Reliability
         session_timeout_ms=45000,

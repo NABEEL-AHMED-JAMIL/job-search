@@ -5,7 +5,7 @@ import os
 import time
 from dotenv import load_dotenv
 from multiprocessing import Process
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from etl.tpd.tpd_kafka_config import create_consumer
 from etl.util.xml_parser import tpd_test_task_payload_parser
 from etl.util.job_state_client import JobStateClient
@@ -53,14 +53,39 @@ def start_test_listener():
         logger.info("Kafka consumer started (process=%s)", id(consumer))
         logger.info("Topic=%s Group=%s", kafka_test_topic, test_group_id)
 
-        # Thread pool inside each consumer process
+        # Thread pool inside each consumer process.
+        #
+        # Two things here are deliberate and were not before.
+        #
+        # The offsets are committed after a message has been handled, not when it was polled.
+        # With auto-commit the consumer marked work done the moment it handed it to the pool,
+        # so anything that did not finish -- a restart, a raised handler, a queued future that
+        # never ran -- was gone for good: never redelivered, and its job left showing Running
+        # for ever. A run of 500 ended with total lag zero and 68 jobs still in flight, which
+        # is that hazard exactly.
+        #
+        # And submission is bounded. submit() never blocks, so the loop used to poll far
+        # faster than ten threads could drain, building an unbounded backlog of futures whose
+        # offsets were already committed. Waiting for a free worker is the backpressure that
+        # keeps what has been accepted and what has been recorded in step.
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            pending = set()
             for message in consumer:
                 payload = message.value
                 if not payload:
+                    consumer.commit()
                     continue
-                # Submit task to thread pool (non-blocking Kafka loop)
-                executor.submit(handle_message, message, payload)
+
+                pending.add(executor.submit(handle_message, message, payload))
+
+                if len(pending) >= MAX_WORKERS:
+                    done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                    _commit(consumer, len(done))
+
+            # Drain whatever is still running before the consumer closes.
+            if pending:
+                wait(pending)
+                _commit(consumer, len(pending))
 
     except KeyboardInterrupt:
         logger.info("Listener stopped by user")
@@ -70,6 +95,20 @@ def start_test_listener():
         if consumer:
             consumer.close()
             logger.info("Kafka consumer closed")
+
+def _commit(consumer, finished):
+    """
+        Commit progress once work has actually completed.
+
+        A failure to commit is logged rather than raised: the messages have been processed, and
+        the worst case is that a later restart redelivers them. That is the direction this
+        should fail in -- doing something twice is recoverable, losing it silently is not.
+    """
+    try:
+        consumer.commit()
+    except Exception as ex:
+        logger.warning("Could not commit after %s message(s): %s", finished, ex)
+
 
 # ------------------------------------------------------------------------------
 # MESSAGE HANDLER (THREAD LEVEL)

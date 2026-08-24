@@ -5,6 +5,12 @@
 import os
 
 import requests
+
+# requests blocks for ever without this: a server that accepts the connection and never
+# replies holds the calling worker thread indefinitely. With a fixed pool that is how a
+# whole consumer stops -- every thread ends up parked on a socket that will never answer.
+# Connect is quick or hopeless; read is given longer because the backend queues under load.
+CALLBACK_TIMEOUT = (5, 30)
 from etl.util.logging_config import get_logger
 
 # Configure colored logging
@@ -36,7 +42,8 @@ class JobStateClient:
             "jobStatusMessage": message
         }
         try:
-            response = requests.post(url, json=payload, headers=self._auth_headers())
+            response = requests.post(url, json=payload, headers=self._auth_headers(),
+                                     timeout=CALLBACK_TIMEOUT)
             if response.status_code == 200:
                 try:
                     logger.info("SUCCESS: %s", response.json())
@@ -65,7 +72,8 @@ class JobStateClient:
             "jobStatusMessage": message
         }
         try:
-            response = requests.post(url, json=payload, headers=self._auth_headers())
+            response = requests.post(url, json=payload, headers=self._auth_headers(),
+                                     timeout=CALLBACK_TIMEOUT)
             if response.status_code == 200:
                 try:
                     logger.info("SUCCESS: %s", response.json())
