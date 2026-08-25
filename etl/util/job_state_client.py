@@ -11,6 +11,23 @@ import requests
 # whole consumer stops -- every thread ends up parked on a socket that will never answer.
 # Connect is quick or hopeless; read is given longer because the backend queues under load.
 CALLBACK_TIMEOUT = (5, 30)
+
+# How many lines to hold before sending, and how long a partial batch may wait.
+#
+# A run producing fifty log lines was making fifty round trips, each repeating the same job
+# lookup on the server. Measured across a 500-job run, that path accounted for roughly 97% of
+# every run's elapsed time once thirty workers were competing for it -- the calls were not slow
+# individually (8ms direct) but they queued.
+#
+# The age cap matters as much as the size: a job that logs slowly should still have its lines
+# appear while it runs, not all at once when it finishes.
+LOG_BATCH_SIZE = 25
+LOG_BATCH_MAX_AGE_SECONDS = 5
+
+import threading
+import time
+from collections import defaultdict
+
 from etl.util.logging_config import get_logger
 
 # Configure colored logging
@@ -21,6 +38,10 @@ class JobStateClient:
 
     def __init__(self, base_url):
         self.base_url = base_url
+        # Buffered log lines per run. Threads share one client, so the buffer is guarded.
+        self._log_buffers = defaultdict(list)
+        self._log_first_seen = {}
+        self._log_lock = threading.Lock()
 
     @staticmethod
     def _auth_headers():
@@ -63,10 +84,70 @@ class JobStateClient:
 
     def job_audit_log(self, job_id, job_queue_id, message):
         """
-          job_id: 1133 etc
-          job_queue_id: 13 etc
-          message: File added to s3 and etc....
+            Buffer a log line, sending once the batch is full or has waited long enough.
+
+            job_id: 1133 etc
+            job_queue_id: 13 etc
+            message: File added to s3 and etc....
+
+            Returns nothing useful now: the send happens later, so there is no per-line
+            response to hand back. Nothing was reading it.
         """
+        key = (job_id, job_queue_id)
+        due = []
+        with self._log_lock:
+            self._log_buffers[key].append(message)
+            self._log_first_seen.setdefault(key, time.monotonic())
+            waited = time.monotonic() - self._log_first_seen[key]
+            if len(self._log_buffers[key]) >= LOG_BATCH_SIZE or waited >= LOG_BATCH_MAX_AGE_SECONDS:
+                due = self._take(key)
+        if due:
+            self._send_log_batch(job_id, job_queue_id, due)
+
+    def flush_logs(self, job_id, job_queue_id):
+        """
+            Send whatever is buffered for this run.
+
+            Called before a run reports its final status, so the lines land before the job is
+            marked done -- a reader opening the logs of a completed job must not find them
+            still in a buffer somewhere.
+        """
+        key = (job_id, job_queue_id)
+        with self._log_lock:
+            due = self._take(key)
+        if due:
+            self._send_log_batch(job_id, job_queue_id, due)
+
+    def _take(self, key):
+        """Remove and return this run's buffered lines. Caller must hold the lock."""
+        lines = self._log_buffers.pop(key, [])
+        self._log_first_seen.pop(key, None)
+        return lines
+
+    def _send_log_batch(self, job_id, job_queue_id, messages):
+        """
+            One request for many lines.
+
+            A failure is logged and the lines are dropped rather than retried. They are audit
+            lines: losing a few is survivable, and retrying inside a worker thread is how the
+            callback path became the bottleneck in the first place.
+        """
+        url = f"{self.base_url}/addLogsBatch/jobId/{job_id}/jobQueueId/{job_queue_id}"
+        try:
+            response = requests.post(url, json={"messages": messages},
+                                     headers=self._auth_headers(), timeout=CALLBACK_TIMEOUT)
+            if response.status_code == 200:
+                logger.info("SUCCESS: %s line(s) for job %s queue %s",
+                            len(messages), job_id, job_queue_id)
+            else:
+                logger.error("FAILED: %s line(s) status=%s response=%s",
+                             len(messages), response.status_code, response.text)
+        except Exception as ex:
+            logger.error("FAILED: %s line(s) for job %s queue %s: %s",
+                         len(messages), job_id, job_queue_id, str(ex))
+
+    def job_audit_log_single(self, job_id, job_queue_id, message):
+        """The original per-line call, kept for anything that needs a line sent immediately."""
         url = f"{self.base_url}/addLogs/jobId/{job_id}/jobQueueId/{job_queue_id}"
         payload = {
             "jobStatusMessage": message

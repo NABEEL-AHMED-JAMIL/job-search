@@ -46,12 +46,17 @@ def parse_926(xml_payload):
     """
     try:
         root = ET.fromstring(xml_payload)
+        # <bucket> is optional: tasks written before it existed have none, and those keep
+        # falling back to MINIO_BUCKET_NAME. Where it is set, it is what routes a tenant's
+        # output into that tenant's own bucket.
+        bucket = root.find("bucket")
         return {
             "id": "F768926",
             "start_year": root.find("start_year").text,
             "end_year": root.find("end_year").text,
             "hurricanes_url": root.find("hurricanes_url").text,
-            "folder": root.find("folder").text
+            "folder": root.find("folder").text,
+            "bucket": bucket.text if bucket is not None else None
         }
     except Exception:
         logger.exception("Failed to parse task payload XML")

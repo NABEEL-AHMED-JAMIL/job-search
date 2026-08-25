@@ -128,6 +128,18 @@ def extract_hurricane_name(task_payload, soup: BeautifulSoup, year: int) -> list
     return hurricane_storm
 
 
+def resolve_bucket(task_payload) -> str:
+    """
+        Which bucket this task writes to.
+
+        The pipeline's <bucket> configuration decides, so each tenant's output lands in that
+        tenant's own bucket rather than a single shared one. MINIO_BUCKET_NAME stays as the
+        fallback for tasks configured before the setting existed.
+    """
+    configured = str(task_payload.get("bucket") or "").strip()
+    return configured or minio_bucket
+
+
 def save_to_bucket(task_payload, year, hurricane_storm):
     """
         Save the extracted hurricane data to a CSV file in MinIO, under
@@ -135,6 +147,7 @@ def save_to_bucket(task_payload, year, hurricane_storm):
         (folder comes from the pipeline's <folder> config, e.g. "hurricane/output").
     """
     time.sleep(0.1)
+    bucket = resolve_bucket(task_payload)
     # folder should be jobId and queue id
     output_prefix = "/".join([
         task_payload["folder"],
@@ -149,15 +162,15 @@ def save_to_bucket(task_payload, year, hurricane_storm):
     df["content"] = df["content"].str.strip()
     # Save CSV file to MinIO
     object_name = f"{output_prefix}/hurricane_data_{year}.csv"
-    job_audit_log(task_payload, f"Uploading {object_name} to {minio_bucket}...")
+    job_audit_log(task_payload, f"Uploading {object_name} to {bucket}...")
     buffer = io.BytesIO()
     df.to_csv(buffer, index=False)
-    if not minio_client.upload_bytes(minio_bucket, object_name, buffer.getvalue(), content_type="text/csv"):
-        logger.error(f"Could not upload {object_name} to MinIO bucket {minio_bucket}.")
-        job_audit_log(task_payload, f"Could not upload {object_name} to MinIO bucket {minio_bucket}.")
-        raise RuntimeError(f"Could not upload extracted output to {minio_bucket}/{object_name}")
-    logger.info(f"Data for {year} saved successfully to {minio_bucket}/{object_name}.")
-    job_audit_log(task_payload, f"Data for {year} saved successfully to {minio_bucket}/{object_name}.")
+    if not minio_client.upload_bytes(bucket, object_name, buffer.getvalue(), content_type="text/csv"):
+        logger.error(f"Could not upload {object_name} to MinIO bucket {bucket}.")
+        job_audit_log(task_payload, f"Could not upload {object_name} to MinIO bucket {bucket}.")
+        raise RuntimeError(f"Could not upload extracted output to {bucket}/{object_name}")
+    logger.info(f"Data for {year} saved successfully to {bucket}/{object_name}.")
+    job_audit_log(task_payload, f"Data for {year} saved successfully to {bucket}/{object_name}.")
 
 def job_audit_log(task_payload, message: str):
     """

@@ -38,6 +38,49 @@ MAX_WORKERS = 25
 # Prevent unlimited tasks waiting in memory
 MAX_QUEUE_SIZE = 50
 semaphore = threading.Semaphore(MAX_WORKERS + MAX_QUEUE_SIZE)
+
+
+class OffsetTracker:
+    """
+        Tracks which offsets are still being worked on, so a commit never claims more than is
+        actually finished.
+
+        consumer.commit() with no arguments commits the consumer's *position*, and poll() has
+        already moved that past every record in the batch. With a pool of workers the first task
+        to finish was therefore committing the whole batch, including records still running and
+        records not yet started -- so a restart mid-batch dropped them, leaving their jobs sitting
+        in Queue for ever with no message left to deliver them.
+
+        Committing each record's own offset as it finishes is no safer, because the pool finishes
+        out of order: committing offset 10 while 7 is still running would skip 7 on restart. So a
+        partition may only be committed up to its lowest offset still in flight.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._pending = {}      # partition -> set of offsets being worked on
+        self._done = {}         # partition -> highest offset finished
+
+    def started(self, partition, offset):
+        with self._lock:
+            self._pending.setdefault(partition, set()).add(offset)
+
+    def finished(self, topic, partition, offset):
+        """Marks one record done and returns the offsets safe to commit, or None."""
+        from kafka import TopicPartition, OffsetAndMetadata
+        with self._lock:
+            pending = self._pending.get(partition, set())
+            pending.discard(offset)
+            highest = self._done.get(partition)
+            self._done[partition] = offset if highest is None else max(highest, offset)
+            # Anything at or above the lowest still-running offset is not ours to claim.
+            safe = min(pending) - 1 if pending else self._done[partition]
+            if safe < 0:
+                return None
+            return {TopicPartition(topic, partition): OffsetAndMetadata(safe + 1, None)}
+
+
+offset_tracker = OffsetTracker()
 shutdown_event = threading.Event()
 
 # ------------------------------------------------------------------------------
@@ -73,6 +116,7 @@ def start_kafka_listener():
                             continue
                         # Control memory
                         semaphore.acquire()
+                        offset_tracker.started(record.partition, record.offset)
                         executor.submit(execute_task_wrapper,record, payload, consumer, job_state_client)
     except Exception as ex:
         logger.exception("Kafka listener failed %s",str(ex))
@@ -87,11 +131,17 @@ def start_kafka_listener():
 def execute_task_wrapper(message, payload, consumer, job_state_client):
     try:
         execute_task(message, payload, job_state_client)
-        # Commit only after success
-        consumer.commit()
-        logger.info("Kafka offset committed offset=%s",message.offset)
+        # Commit only after success, and only up to the lowest offset still being worked on.
+        offsets = offset_tracker.finished(message.topic, message.partition, message.offset)
+        if offsets:
+            consumer.commit(offsets)
+            logger.info("Kafka offset committed partition=%s offset=%s",
+                        message.partition, message.offset)
     except Exception as ex:
         logger.exception("Task failed %s",str(ex))
+        # A failed record must not hold its partition's commit point for ever; the job is already
+        # marked Failed, so let the offsets past it move on.
+        offset_tracker.finished(message.topic, message.partition, message.offset)
     finally:
         semaphore.release()
 
@@ -144,9 +194,14 @@ def execute_task(message, payload, job_state_client):
         else:
             raise ValueError(f"Unknown pipeline {pipeline_id}")
 
+        # Log lines are buffered, so they must be sent before the run is marked done -- a
+        # reader opening a completed job's logs must not find the last of them in a buffer.
+        job_state_client.flush_logs(job_id, job_queue_id)
         update_job_status(job_state_client, job_id, job_queue_id, JobStatus.COMPLETED,"Job completed successfully")
     except Exception as ex:
         logger.exception("Job failed job_id=%s",job_id)
+        # Flush on failure too: the buffered lines are usually what explains it.
+        job_state_client.flush_logs(job_id, job_queue_id)
         update_job_status(job_state_client, job_id, job_queue_id, JobStatus.FAILED, str(ex))
         raise
 

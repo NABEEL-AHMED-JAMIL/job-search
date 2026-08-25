@@ -148,11 +148,16 @@ def execute_task(payload: dict):
         update_job_status(job_id, job_queue_id, JobStatus.RUNNING,f"Job {job_id} is running.")
         task_payload = extract_task_payload(payload)
         process_batches(job_id, job_queue_id, task_payload)
+        # Before the run is marked done: a reader opening a completed job's logs must not find
+        # the last lines still sitting in a buffer.
+        job_state_client.flush_logs(job_id, job_queue_id)
         update_job_status(job_id, job_queue_id, JobStatus.COMPLETED,f"Job {job_id} completed successfully.")
         logger.info("Complete Job. jobId=%s jobQueueId=%s",job_id, job_queue_id)
 
     except Exception as ex:
         logger.exception("Job failed. jobId=%s", job_id)
+        # Flush on the failure path too -- the buffered lines are usually what explains it.
+        job_state_client.flush_logs(job_id, job_queue_id)
         update_job_status(job_id, job_queue_id, JobStatus.FAILED, f"Job {job_id} failed due to {str(ex)}")
         raise
 
