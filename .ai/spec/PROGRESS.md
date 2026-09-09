@@ -32,7 +32,7 @@ status record, not a failure to have finished.
 | Performance — verify cancellation | BLOCKED | Cancellation does not exist. |
 | Performance — optimize storage reads | PARTIAL | `knownTotal` removed the repeat COUNT on every page turn. |
 | Reliability — retry policy for transient storage errors | MISSING | No retry anywhere in the analytics path. |
-| Reliability — idempotent export/write | MISSING | Known defect: a one-second filename stamp, so two write-backs in the same second silently overwrite. Found and not fixed. |
+| Reliability — idempotent export/write | **DONE 2026-09-08** | Two mechanisms, because the cost of being wrong is somebody's data: the stamp went to milliseconds, and `refuseToOverwrite` asks the platform's own storage service whether the key is taken before writing. `overwrite=true` is honoured — replacing yesterday's export on purpose is a real thing to want; doing it by accident is not. Fails CLOSED: an unreadable answer refuses the write rather than assuming the key is free, which would restore the clobber precisely when the store is unhealthy and it is hardest to notice. Four tests, proved load-bearing by removing the guard and watching the two refusals fail while the two controls stayed green. |
 | Reliability — cleanup of temporary resources | MISSING | No TTL, no cleanup job. |
 
 ## Document 16 — implementation checklist (audited inline 2026-09-08)
@@ -43,7 +43,7 @@ Final gate, verbatim from the document, with the truth beside it:
 |---|---|
 | backend build passes | DONE — `mvn -o package`, 845 tests |
 | frontend build passes | DONE — `ng build` clean, 765 tests |
-| migrations pass | DONE — V31/V32/V33 applied to real Postgres; four tables live |
+| migrations pass | **CORRECTED** — V31/V32/V33 were applied; V34 was NOT, and this line claimed otherwise. The claim was true of a throwaway scratch database, not of `etl_job`. Now applied; seven analytics tables live, and a Postgres integration test guards the drift. |
 | all critical tests pass | DONE for what exists; no integration or E2E tests exist to pass |
 | **actual benchmark evidence captured** | **FAILS — `analytics_benchmark_result` holds 0 rows** |
 | **no fake/mock completion claims** | **Held, and enforced: the Azure refusal's "S3 and MinIO have been verified" was removed on 2026-09-08 once it emerged every S3 connection points at LocalStack, so the AWS path is unexercised too.** |
@@ -161,3 +161,54 @@ keys added; an analytics health indicator; `analytics.enabled` as a real switch.
 - **The master changelog cannot build a database from scratch** — it fails at V12 because early
   changesets assume Hibernate `ddl-auto` ran first. Pre-existing and unrelated to analytics, but it
   means no CI job can verify a migration from empty.
+
+## Wave 2 — the Analytics Canvas — done 2026-09-09
+
+Backend 943 → **1064**. Frontend 768 → **895**. Document 07 goes from 2 of 48 to substantially built:
+1/2/3 dimensions, all eight aggregations, all fourteen filter operators with nested AND/OR, Top-N with
+a real roll-up, drill-down and drill-up with server-composed crumbs, pivot, cross-filtering, saved
+analyses. Plus 20 integration tests that read real objects from the MinIO and LocalStack running here,
+and the typed-column metadata 09 asked for.
+
+**Seven defects found by the adversarial pass, all reproduced, all fixed:**
+
+1. **A dataset value spelled "Other" collided with the roll-up, and the pivot silently dropped one.**
+   Measured: 500 vanished from a 740 total with nothing on the response saying a row had gone. The
+   cause was a comment that read as a safeguard and was the defect — "the marker column is what tells
+   them apart, and it never leaves" — because it never left, nothing downstream could tell them apart,
+   including the pivot builder in the same class. Roll-up rows are now tracked by index.
+2. **Top-N's "Other" reported only the LAST roll-up row** with two or three dimensions, so members
+   were undercounted and some were named nowhere. Merged across every roll-up row.
+3. **`other.valueCount` was short by one** whenever the no-value group was rolled up: `list(DISTINCT)`
+   includes null and `count(DISTINCT)` does not, so the response shipped a four-element list beside a
+   count of three and flagged nothing. The existing test asserted the wrong number and was corrected.
+4. **Every value-bearing filter on a TIME column failed**, and `explain()` told the user their file
+   was malformed — the application blaming customer data for a binding bug. `java.time.LocalTime` is
+   refused by duckdb_jdbc 1.1.3. Measured while fixing it: `java.sql.Time`, the obvious repair, binds
+   without complaint and **matches nothing**, which is worse. Bound as validated text with an explicit
+   `CAST(? AS TIME)`, since text compares implicitly for `=` and not for `>`.
+5. **TIME rendered without its seconds** — 14:30:00 came back as "14:30" — the same defect class as
+   the phantom midnight, from the method rewritten to stop doing exactly that.
+6. **Deep filter nesting was a StackOverflowError inside Jackson** before the depth guard ran. An
+   Error passes every catch. Jackson 2.11 predates StreamReadConstraints, so a byte ceiling at the
+   filter is the honest guard — it does not pretend to be a depth check, and the depth rule still runs.
+7. Top-N plus `max-rows` can still cut the Other row; recorded, not fixed.
+
+**What the pass could NOT break**, stated because it is the point of doing it: 25 injection payloads
+through the real compiler into a real DuckDB all produced byte-identical parameterised SQL; field
+names are an allow-list derived from the data itself, so a request cannot contribute even the case of
+an identifier; the governed path, the tenancy checks and StatementGate all hold behind the new
+composer.
+
+**Two environment findings worth more than they look:**
+
+- **The eight existing `*IT.java` classes have never run in the build.** Surefire's default includes
+  do not match `*IT.java`, the pom configures neither includes nor Failsafe, and `mvn -o package`
+  stops before `verify`. Confirmed by the absence of any surefire report for them.
+- **V34 had never been applied to the local database**, which contradicts this file's earlier claim.
+  That claim was true of a throwaway scratch database and not of `etl_job`; under `ddl-auto=validate`
+  the application would not have started. The new Postgres integration test found it on its first run
+  and now catches that class of drift automatically.
+
+**Also closed this wave, from V2's reliability row:** write-back no longer silently overwrites — a
+millisecond stamp plus an existence check that fails closed, with `overwrite=true` honoured.
