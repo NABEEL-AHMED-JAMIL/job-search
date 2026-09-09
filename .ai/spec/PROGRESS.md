@@ -17,7 +17,7 @@ status record, not a failure to have finished.
 | Architecture — verify dependency boundaries | PARTIAL | `process.analytics` now reaches `process.model.service.StorageBrowserService` (AnalyticsBenchmarkService) — a new direction, flagged by its author, never reviewed. |
 | Architecture — inspect query plans | MISSING | No EXPLAIN/plan inspection anywhere. |
 | Security — penetration-style authorization tests | PARTIAL | Real: the `schema_name` cross-bucket exploit, the cross-tenant resolver bug, the StatementGate evasion corpus. Not systematic. |
-| Security — secret scanning | MISSING | Never run. |
+| Security — secret scanning | **DONE 2026-09-09** | gitleaks over the git HISTORY of both repositories (a working-tree scan calls two of the three `process` findings clean, because the files no longer exist in HEAD). Nine raw findings triaged to three real; five false positives allowlisted with the reason beside each. `.ai/tools/secret-scan.sh` fails when the count goes up, and is proved to by mutation. Full triage in `SECRET-SCAN.md`. **Two exposures were previously unknown: an RSA private key (2024) and a Google OAuth client secret (2022), both in pushed history.** All three need rotation, which is not something a commit can do. |
 | Security — tenant-isolation review | DONE | DatasetResolver `isOwnedByCaller` + `Status.Active`; per-entity `@Filter`; the findById trap handled via scopedFind. |
 | Security — audit completeness | PARTIAL | Query attempts incl. refusals recorded. "Dataset opened" and "profile requested" write only a log line. |
 | UX — visual consistency | PARTIAL | Tokens throughout, no raw hex. No systematic pass. |
@@ -26,10 +26,10 @@ status record, not a failure to have finished.
 | UX — responsive behaviour | PARTIAL | Mobile checked once by hand; container queries for the rails. |
 | UX — loading/error/empty states | DONE | Four dataset-pane states, four chart empty states, distinct quality empties. |
 | UX — dense data-table ergonomics | MISSING | The Data view is a page-turner: 2 of 06's 8 grid capabilities. |
-| Performance — benchmark regression suite | MISSING | Harness exists; no suite, and it has never been run. |
+| Performance — benchmark regression suite | PARTIAL — row was stale | The harness has now been run: six rows in `analytics_benchmark_result` (2026-09-08/09). What is still missing is the *regression* half — thresholds that fail a build when a tier slows down. |
 | Performance — profile expensive queries | MISSING | One agent profiled chart parsing. Nothing else. |
 | Performance — optimize high-cardinality analytics | MISSING | No Top-N/high-cardinality path exists to optimise. |
-| Performance — verify cancellation | BLOCKED | Cancellation does not exist. |
+| Performance — verify cancellation | **DONE — row was stale** | Cancellation exists and is real: `RunningQueries.Handle`, a single watchdog thread, `Statement.cancel()` (measured working on 1.1.3 where `setQueryTimeout` is a no-op), QUEUED→RUNNING transitions that honour a cancel arriving while queued, and cancel-before-close ordering. Re-verified 2026-09-09. |
 | Performance — optimize storage reads | PARTIAL | `knownTotal` removed the repeat COUNT on every page turn. |
 | Reliability — retry policy for transient storage errors | MISSING | No retry anywhere in the analytics path. |
 | Reliability — idempotent export/write | **DONE 2026-09-08** | Two mechanisms, because the cost of being wrong is somebody's data: the stamp went to milliseconds, and `refuseToOverwrite` asks the platform's own storage service whether the key is taken before writing. `overwrite=true` is honoured — replacing yesterday's export on purpose is a real thing to want; doing it by accident is not. Fails CLOSED: an unreadable answer refuses the write rather than assuming the key is free, which would restore the clobber precisely when the store is unhealthy and it is hardest to notice. Four tests, proved load-bearing by removing the guard and watching the two refusals fail while the two controls stayed green. |
