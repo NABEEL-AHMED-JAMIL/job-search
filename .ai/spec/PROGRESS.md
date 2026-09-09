@@ -41,11 +41,11 @@ Final gate, verbatim from the document, with the truth beside it:
 
 | Gate | Status |
 |---|---|
-| backend build passes | DONE — `mvn -o package`, 845 tests |
-| frontend build passes | DONE — `ng build` clean, 765 tests |
+| backend build passes | DONE — `mvn -o package`, 1,098 tests, 0 failures |
+| frontend build passes | DONE — `ng build` clean, 1,065 tests |
 | migrations pass | **CORRECTED** — V31/V32/V33 were applied; V34 was NOT, and this line claimed otherwise. The claim was true of a throwaway scratch database, not of `etl_job`. Now applied; seven analytics tables live, and a Postgres integration test guards the drift. |
-| all critical tests pass | DONE for what exists; no integration or E2E tests exist to pass |
-| **actual benchmark evidence captured** | **FAILS — `analytics_benchmark_result` holds 0 rows** |
+| all critical tests pass | DONE. Backend 1,098 / frontend 1,065, both clean. **E2E now exists** — 8 Playwright specs over the real 150,000-row fixture, all passing, one proven load-bearing by mutation. **The 20 analytics integration tests do run in `mvn package`** — they are named `*IntegrationTest`, which matches surefire's default includes, and re-running them under `-Danalytics.it.required=true` (which turns "infrastructure absent" from a skip into a failure) passes with real HTTP reads logged against MinIO :9000 and LocalStack :4566. Separately, eight pre-existing non-analytics `*IT.java` classes never run: surefire's defaults do not match `*IT` and there is no Failsafe plugin. |
+| **actual benchmark evidence captured** | **PASSES 2026-09-09 — six rows recorded through the harness, on the real request path.** See below. |
 | **no fake/mock completion claims** | **Held, and enforced: the Azure refusal's "S3 and MinIO have been verified" was removed on 2026-09-08 once it emerged every S3 connection points at LocalStack, so the AWS path is unexercised too.** |
 
 Checklist body items are tracked by the same evidence in `AUDIT.md`.
@@ -66,6 +66,7 @@ Chosen from the audit's dependency structure, not the document order.
 5. **Workspace** — the ten tabs, the real data grid, the Canvas UI, charts and dashboards.
 6. **Evidence** — generate real CSV/Parquet at size, run the harness, capture measured numbers;
    integration tests against the MinIO and LocalStack already running here; the eight E2E scenarios.
+   **All three DONE: benchmark 2026-09-08, integration tests and E2E 2026-09-09.**
 7. **V2 hardening** — the table above, once there is a whole implementation to harden.
 
 ## Benchmark evidence — captured 2026-09-08
@@ -212,3 +213,41 @@ composer.
 
 **Also closed this wave, from V2's reliability row:** write-back no longer silently overwrites — a
 millisecond stamp plus an existence check that fails closed, with `overwrite=true` honoured.
+
+
+## Benchmark evidence — recorded through the harness, 2026-09-09
+
+Document 16's last failing gate. Previously the table held zero rows and the only measurement
+existed in a chat log, which is not evidence a system holds.
+
+Run through `POST /analyticsBenchmark.json/runBenchmark`, against the fixtures in
+`etl-bucket/analytics-benchmark/`, on the deployed stack:
+
+| Label | Measure | Format | min | median | max | runs | warmups | sessions/run | bytes |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| csv-vs-parquet-10mb | QUERY | CSV | 236 | **242** | 260 | 5 | 2 | 1 | 9,707,067 |
+| csv-vs-parquet-10mb | QUERY | PARQUET | 43 | **50** | 68 | 5 | 2 | 1 | 2,390,395 |
+| csv-vs-parquet-100mb | QUERY | CSV | 991 | **1001** | 1175 | 5 | 2 | 1 | 98,571,749 |
+| csv-vs-parquet-100mb | QUERY | PARQUET | 112 | **117** | 163 | 5 | 2 | 1 | 23,792,311 |
+| file-open-100mb | FILE_OPEN | CSV | 1261 | **1290** | 1421 | 3 | 1 | 3 | 98,571,749 |
+| file-open-100mb | FILE_OPEN | PARQUET | 117 | **132** | 134 | 3 | 1 | 3 | 23,792,311 |
+
+**Parquet is 4.8x faster at 10 MB and 8.6x at 100 MB on a GROUP BY**, and 9.8x on a whole file
+open. So the advice the product already gives users — *"Try a narrower dataset, or Parquet instead
+of CSV"* — is true on this deployment, at both sizes, for both kinds of work.
+
+Three things the rows record that a bare duration would not, and each was a stated design goal:
+
+- `sessions_per_run` is **3** for FILE_OPEN and **1** for QUERY. That is the confound document 12
+  warns about, carried on the row rather than left for a reader to trip over: a file open spends
+  the per-session cost three times, so the two measures are not comparable and `measured_what`
+  says so in words.
+- `limits_at_run` captures `maxRows=100000, timeoutSeconds=120, maxConcurrent=4,
+  duckdbMemoryLimit=512MB, duckdbThreads=2`. Numbers taken under different ceilings are not
+  comparable, and these were taken after the ceilings moved.
+- `dataset_bytes` is populated, which also confirms the alias-versus-bucket-name fix: that lookup
+  used to be handed a bucket name where the storage service wanted a connection alias, and the
+  column silently came back null — whose documented meaning is "this was a glob".
+
+**Still not measured**, and the matrix says so honestly: only MinIO (no second provider), only two
+of document 12's ten operations (full scan/aggregation), no 1 GB tier, and no JSON/NDJSON.

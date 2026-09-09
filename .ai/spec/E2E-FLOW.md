@@ -4,8 +4,14 @@ Walked by hand against the deployed stack on 2026-09-09, backend and frontend bo
 `platform-fixes-and-cleanup`, over the real 150,000-row fixture at
 `etl-bucket/analytics-benchmark/sales-10mb.csv`. Every result below was observed, not inferred.
 
-This doubles as the script for the automated E2E suite document 13 asks for and which does not
-exist yet: each numbered step is one scenario, and the "what proves it" column is its assertion.
+This doubles as the script for the automated E2E suite document 13 asks for: each numbered step is
+one scenario, and the "what proves it" column is its assertion. The suite now exists, at
+`scheduler1/next/e2e/analytics-workspace.spec.ts` — 8 specs, all passing (2026-09-09). Run it with
+`E2E_PASSWORD=… npx playwright test` from `scheduler1/next`; it skips, rather than fails, when the
+stack is not running.
+
+Step 8's scenario is proven load-bearing by mutation: reverting the drill-up fix and redeploying
+makes it fail at the "All rows" crumb assertion specifically.
 
 ## The flow
 
