@@ -44,9 +44,11 @@ loses the root: `analytics.ts:3186` sets `dimensions` from `response.data.dimens
 EFFECTIVE post-drill grouping, so after one drill the client's root is already `customer` and
 drill-up asks the server to restore something that is no longer there.
 
-The fix is a root-versus-effective split in the component, not a one-liner — the drill controls
-guard on `dimensions()` containing the clicked dimension, so simply not adopting the response would
-block the second drill. Left for the next stage rather than half-done.
+**FIXED 2026-09-09.** The root-versus-effective split now exists: `dimensions()` is the root the
+request carries, `groupedBy()` is what the server reports as grouped, `effectiveDimensions()` is
+what the screen and the drill controls read, and the reported grouping is dropped when the root is
+re-picked. Confirmed in the running product — by region → drill to by customer → click the crumb →
+back to five regions. Step 8 above now passes.
 
 ## What this flow does not cover yet
 
