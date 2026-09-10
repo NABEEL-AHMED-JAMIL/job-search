@@ -16,7 +16,7 @@ migrated; that is a deliberate stop, explained at the end.
 
 ## Findings
 
-### F1 — Dashboards expose four widget types; the chart library has more (open)
+### F1 — Dashboards expose four widget types; the chart library has more (**CLOSED 2026-09-09**)
 `WidgetVisualization` is `'table' | 'ranked' | 'bar' | 'donut'` (`analytics.service.ts:626`), and
 the dashboard picker offers exactly those four (`dashboard.ts:427`). Meanwhile
 `shared/charts/` already contains `day-series` (time series / line), `split-bar` (stacked),
@@ -25,7 +25,7 @@ the dashboard picker offers exactly those four (`dashboard.ts:427`). Meanwhile
 **So the gap is wiring, not drawing.** Line, area, stacked-bar and histogram widgets are mostly a
 matter of admitting them to the vocabulary and dispatching on them.
 
-### F2 — There is no KPI / metric card (open)
+### F2 — There is no KPI / metric card (**CLOSED 2026-09-09**)
 A single-figure analysis ("Total revenue") renders as a one-row, one-column table. Every executive
 summary in the new catalogue has this shape, and each is a table where a number belongs.
 
@@ -59,9 +59,12 @@ Each widget carries the filters frozen into its saved analysis. There is no filt
 dashboard and no way for one widget to narrow the others. (Cross-filtering exists *inside* the
 Canvas — Canvas → Data tab — and was built earlier this session; dashboards have nothing.)
 
-### F6 — Widget states exist, but only per board (partly open)
+### F6 — Widget states exist, but only per board (**partly wrong — corrected**)
 `dashboard.ts` has `loading` and `error` signals at the board level and per-widget error text.
-There is no per-widget loading skeleton, so a board with one slow widget shows a static page.
+**My original claim that a slow board "shows a static page" was wrong** — seen live, the board
+renders `Running 4 of 5 — Completed revenue by month.`, and each pending tile says
+`Waiting its turn. Widgets run one at a time.` That is better than I credited. What is genuinely
+missing is a per-tile skeleton in place of the text.
 
 ### F7 — `/reports` does not use the widget architecture (open, deliberate)
 It predates it, reads a different data source, and is ~3,000 lines with its own pivot engine and
@@ -99,15 +102,24 @@ combinations a single-shape smoke test never reaches — two-dimension groupings
 response, Bottom-N actually returning the smallest, and an ANDed filter narrowing more than either
 half.
 
+## What F1/F2 became
+
+Eleven kinds, not four: single figure, table, ranked bars, bars in order, stacked bars, line,
+filled area, share of the total, histogram, scatter, comparison. Four new components; `histogram`
+wired in from the existing library; stacking done through `bar-chart`'s existing segment support.
+
+Every kind carries the reason it cannot draw a given result, which is the half worth having. It
+also exposed two bugs that four kinds had hidden: `drawn()` NAMED its four, so every new kind was
+offered, stored, shown as selected and silently drawn as a table; and the row count always counted
+the table's eight rows, so a 24-bar chart read "8 of 24 rows shown".
+
 ## Still open
 
-Everything under **Findings** marked open. In the order I would take them:
-
-1. **F3 date granularity** — the most limiting, and the one users will hit on their own files
-2. **F1 + F2 widget types** — line, area, stacked, histogram, KPI card; mostly wiring
-3. **F5 dashboard filters** — a filter bar and cross-widget narrowing
-4. **F4 CSV decimals** — a correctness note at minimum, a typed read at best
-5. **F6 per-widget loading**
+1. **F3 date granularity** — the most limiting, and the one users hit on their own files
+2. **F5 dashboard filters** — a filter bar, and cross-widget narrowing
+3. **F4 CSV decimals** — a correctness note at minimum, a typed read at best
+4. **Summary widgets** — dimension / trend / distribution summaries, and a filter widget
+5. **F6 per-tile loading skeleton**
 6. **F7 `/reports` migration** — only with a decision that it is worth a rewrite
 
 UI/UX work (grid layout, spacing, typography, dark mode) has **not** been started.
