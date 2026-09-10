@@ -261,3 +261,14 @@ order, and a reproduction recipe in `LIQUIBASE-FROM-SCRATCH.md`. **Not fixed**: 
 squash, and it encodes decisions about what a fresh environment should reproduce that belong to
 whoever owns the schema. A tested, idempotent baseline is kept at `liquibase-baseline/` for
 whoever does it.
+
+## Five reports, built and run (2026-09-09)
+
+The module used rather than unit-tested. Five dashboards, twenty-seven widgets, over the real
+150,000-row dataset, written to the live database and owned by `admin@platform.local`
+(ids 1034-1038). **Every one of the 27 widget configurations was posted to `/analyze` against real
+MinIO and had to return rows** — 27 real DuckDB scans — before being saved. The assertion caught a
+design flaw in my own first draft: a tile for "orders with no note" would have drawn an empty chart
+forever, because every row in this dataset carries one.
+
+Full inventory, verification table and removal SQL in `REPORTS.md`.
