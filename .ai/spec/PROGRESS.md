@@ -272,3 +272,14 @@ design flaw in my own first draft: a tile for "orders with no note" would have d
 forever, because every row in this dataset carries one.
 
 Full inventory, verification table and removal SQL in `REPORTS.md`.
+
+## Reports / Analytics end-to-end review (2026-09-09)
+
+Seven findings, four of them previously unknown — including that **CSV money is read as DOUBLE
+while Parquet keeps DECIMAL**, found by independently validating the engine's arithmetic against a
+hand parse of the source file. Full review, evidence and priority order in `REPORTS-REVIEW.md`.
+
+Delivered: a 250,000-row × 21-column sample dataset in the bucket, ten independent-validation
+assertions against it, and twenty reports of 106 widgets — every widget proved to run against the
+real object. Not started: the UI/UX work, and the widget types that need wiring (line, area,
+stacked, histogram, KPI card).
