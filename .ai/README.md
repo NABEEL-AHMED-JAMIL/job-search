@@ -9,6 +9,7 @@ The golden rule: **nothing goes straight from a requirement to code.** A feature
 | I want to… | Go to |
 |---|---|
 | Understand the system | [discovery/application-inventory.md](discovery/application-inventory.md) |
+| **Understand how it runs** — the path a request or a job run takes | [discovery/module-workflows.md](discovery/module-workflows.md) |
 | See every feature and its status — migrated, partial, or built new | [discovery/features.md](discovery/features.md) |
 | **Know what is already broken** | [discovery/risks.md](discovery/risks.md) — 46 ranked findings, 5 of them P0 |
 | Pick up a specific feature | `grooming/<feature>.md`, then `synthesis/<feature>.md` |
@@ -42,7 +43,7 @@ Old-School/
 ├── job-search/          Python Kafka workers   — out of scope this phase
 └── .ai/
     ├── project.md         the specification
-    ├── discovery/         what exists
+    ├── discovery/         what exists, and how it runs
     ├── grooming/          what each feature needs      (one per feature)
     ├── synthesis/         what changes and why         (one per feature)
     ├── execution/         the running order and progress

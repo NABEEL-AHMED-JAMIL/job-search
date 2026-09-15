@@ -365,3 +365,78 @@ against 0 and 84 before -- every destroyed character restored, exactly.
 not repair what is stored, because a chunk set is only rewritten when a file's etag changes or its
 chunks are removed. Repairing them means a deliberate reindex. Full account in
 `RAG-CHAT-REVIEW.md`.
+
+---
+
+## 2026-09-15 — Run retry with backoff
+
+**Why this and not something else.** Asked what else the ETL platform could gain, the honest answer
+was a ranked list with job *dependencies* at the top. Reading the dispatcher first changed the
+order: retry is the smaller change, is strictly additive, and is the safe way to touch the most
+load-bearing code in the platform once before doing the larger thing to it. Dependencies remain
+first by value and are now second by sequence.
+
+**What landed.** A failed run is re-queued with a doubling backoff, capped at an hour, before
+anything announces a failure. Policy is per job — `max_attempts` (default **1** = no retry, the
+behaviour every existing job had) and `retry_backoff_seconds` (default 60), both bounded by CHECK
+constraints and by `SourceJobServiceImpl.retryPolicyError` so an out-of-range value is a sentence
+rather than an internal error. Schema `V38.0-job-retry`. Form controls on the job editor.
+
+**A prediction in the plan was wrong, and the record should say so.** The plan named the danger as
+"a pending retry eats the next scheduled run" and proposed excluding retries from the busy count.
+That was backwards twice over. The skip is *correct* — the busy count is what stops two workers
+writing the same output folder, and a retry is the same slot's work, so it must keep occupying the
+slot. The real defect was elsewhere: `findAllJobForTodayWithLimit` takes any Queue row with
+`job_send = false`, so a retry would have dispatched on the very next tick with its backoff
+ignored entirely. That is the query that changed, and its cutoff is passed from Java rather than
+read as SQL `now()`, because the database is UTC while the application pins America/Chicago.
+
+**A real bug that only a live run caught.** Retry was first wired to
+`MessageQServiceImpl.changeJobStatus`, found by grepping `JobStatus.Failed` and reading the first
+plausible match. All 1422 tests passed and the feature did not work: the live worker reports through
+**`NotifyServiceImpl.changeState`**, a file that appeared in the very first grep and was never
+opened. A real run of an always-failing job went straight to Failed at attempt 1 and mailed about
+it. Four sites mark a run Failed and three have nearly identical shape; they are now enumerated in
+`discovery/module-workflows.md` §4.6, and `NotifyServiceRetryTest` exists so the gap cannot reopen
+silently.
+
+**Verified.** Backend **1428** green (17 new), frontend **1545** green. Five mutations caught,
+including the one that proves the failure email is suppressed while a retry is pending. Migration
+applied live and its CHECK constraint proved by a rejected insert in a rolled-back transaction. The
+backoff filter proved against real Postgres: a retry due in five minutes excluded, one due a minute
+ago taken, an ordinary run unaffected.
+
+**Proven end to end on the deployed stack.** Job 2410, built to fail, at three attempts and a
+five-second base: attempt 1 failed at 12:40:15, attempt 2 at 12:41:15 (backoff doubled 5s → 10s),
+attempt 3 at 12:42:15, then Failed with an end time — and **exactly one email for the three
+attempts**, against one per attempt before. Control job 2411 at the default single attempt failed
+immediately with `attempt = 1` and `next_attempt_at` null, confirming unchanged behaviour for every
+job nobody has opted in.
+
+**Open.** Job dependencies (`dependsOn` plus a gate in dispatch stage 2) is the next step and the
+dispatcher is now read closely enough to do it. Left as test data: job 2410 at 3 attempts / 5s, job
+2420 at 3 attempts, and runs 5705–5707.
+
+## 2026-09-15 — Read a transcript aloud
+
+The transcript tool can now read its output back, marking the spoken word in yellow and tinting its
+passage, so the text keeps the reader's place while they check it against the audio.
+`shared/ui/read-aloud.service.ts` is the counterpart of `dictation.service.ts` and is kept beside
+it; `read-along-text.ts` renders the mark and is shared by all three transcript views.
+
+Two decisions worth keeping: **one passage per utterance**, because boundary events report a
+character offset and an offset into one passage is directly usable while an offset into a
+concatenation of forty must be mapped back (and because Chrome truncates long utterances); and the
+mark is positioned **by offset rather than by matching the word**, because the same word appears
+several times in most passages and matching by content marks the wrong one.
+
+**Verified against the real engine, not only the fake** — the fake proves logic, it cannot tell you
+the browser agrees. 180 voices; nine word-boundary events for a nine-word sentence at exact offsets;
+the mark tracking the voice across line wraps on a real 6-minute transcript; pause holding the place;
+stop-while-paused leaving the engine able to speak again (the resume-before-cancel guard, which some
+engines need); and navigating away silencing it. Contrast measured rather than eyeballed: the marked
+word is **13.3:1** in light and **11.4:1** in dark. The dark-mode timestamp *looked* too dim and
+measured 4.88:1 — it passes, and would have been "fixed" on a hunch without the measurement.
+
+**34 new tests, 1545 green.** Four mutations caught, including trusting a reported word length of
+zero (which collapses the highlight to one letter on Safari) and dropping the stale-generation guard.
