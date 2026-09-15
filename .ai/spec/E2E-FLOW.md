@@ -22,7 +22,7 @@ makes it fail at the "All rows" crumb assertion specifically.
 | 3 | **Data** → click the `amount` header twice | First row is `999.99` — the **dataset's** maximum, not the page's. `aria-sort="descending"` on that column alone |
 | 4 | Type `cust-26813` into *Search all rows* | Count becomes **"3 of 150,000 rows"**; pager disappears; 3 body rows |
 | 5 | Clear the search | Count returns to **150,000 rows / Page 1 of 1,500** — the dataset does not stay shrunk |
-| 6 | **Canvas** → dimension `region`, measure `Sum` of `amount`, Run | 5 groups, `583 ms in the engine`, typed headers `region VARCHAR` / `amount_sum DOUBLE` |
+| 6 | **Canvas** → dimension `region`, measure `Sum` of `amount`, Run | 5 groups, `583 ms in the engine`, typed headers `region VARCHAR` / `amount_sum DECIMAL(38,15)` (was DOUBLE before the exact-total fix) |
 | 7 | Set *then by* `customer`, click **Drill** on `east` | Crumbs read `All rows / region: east`; heading becomes "Sum of amount by customer"; 10,000 groups |
 | 8 | Click the **All rows** crumb | Filter is removed — **but see finding 2** |
 | 9 | **Compact** | One line per column: column, type, sample, null %, distinct %, key metric, quality. `≈` on estimated distincts, `(est.)` on an estimated median |

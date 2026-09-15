@@ -13,24 +13,25 @@ status record, not a failure to have finished.
 
 | Item | Status | Evidence / note |
 |---|---|---|
-| Architecture — remove duplicated services | PARTIAL, improved 2026-09-09 | StorageService reused rather than copied; a second charting/dashboard stack refused (synthesis 3.11). **The `AnalyticsEngine` seam is now real rather than paper**: the DuckDB bean was an unconditional `@Service`, so a deployment supplying its own engine got a `NoUniqueBeanDefinitionException` and no context at all — it is now `@ConditionalOnProperty(analytics.engine=duckdb, matchIfMissing=true)`. And `AnalyticsQueryService.shutdown()` reached for the engine with `instanceof DuckDbAnalyticsEngine`, so the seam covered every method except the one stopping the background thread; `shutdown()` is now on the interface. "Simplify abstractions" still not attempted. |
-| Architecture — verify dependency boundaries | PARTIAL | `process.analytics` now reaches `process.model.service.StorageBrowserService` (AnalyticsBenchmarkService) — a new direction, flagged by its author, never reviewed. |
-| Architecture — inspect query plans | MISSING | No EXPLAIN/plan inspection anywhere. |
-| Security — penetration-style authorization tests | PARTIAL | Real: the `schema_name` cross-bucket exploit, the cross-tenant resolver bug, the StatementGate evasion corpus. Not systematic. |
+| Architecture — remove duplicated services / **simplify abstractions** | **DONE 2026-09-10** | StorageService reused rather than copied; a second charting/dashboard stack refused (synthesis 3.11). The `AnalyticsEngine` seam is real rather than paper: `@ConditionalOnProperty(analytics.engine=duckdb, matchIfMissing=true)`, and `shutdown()` moved onto the interface after an `instanceof` was found covering every method except the one that stops the background thread. **"Simplify abstractions" was then done by measuring rather than by taste.** Only one interface in the module has one implementation and it is the seam above, so there was no interface bloat to cut; what the measurement DID find was four abstractions that cost something and returned nothing, three of them the same defect — a configuration knob an operator can set that changes nothing. See the row below. |
+| Architecture — the inert-configuration sweep (part of "simplify abstractions") | **DONE 2026-09-10** | Every `public` method in `process.analytics` was checked for a caller. Four had none. **`analytics.benchmark.enabled`** and **`analytics.parquet.conversion-enabled`** were each declared, given a refusal sentence written for an operator, reported by `/actuator/health` among the limits *in force* — and read by no production code, so setting either to false switched off nothing while the health endpoint agreed it was off. Both are now enforced at the point the caller's word is first believed, with tests that fail when the guard is removed; the benchmark's switch deliberately still allows PAST results to be read. **`analytics.history.cleanup-interval-hours`** described a six-hour cadence, the cron ran hourly, and the cron's own comment claimed the property took effect — deleted, because retention-days is the control here and the cadence is not. **`analytics.profile.sample-rows`** was declined on a measurement rather than removed on taste: on 2M rows × 6 cols of CSV, `USING SAMPLE 200000 ROWS` (what the property means) costs 374 ms against 396 ms for the whole SUMMARIZE — a reservoir sample reads every row, so it saves 5% and buys a number that is no longer true. The numbers and the form that WOULD work (a percentage sample, labelled as one in the UI) are in `AnalyticsLimits`. The fourth, `AnalyticsQueryService.runningCount()`, was a facade hop over `RunningQueries.size()` that nothing called — the hop is gone and the count is now reported by `/actuator/health` beside max-concurrent, which is the pair that answers "why is my query waiting". `RunningQueries.size()` also finally has the leak assertion its javadoc said it existed for: every terminal path a run can take, then the same run ids reused to prove the registry really emptied. |
+| Architecture — verify dependency boundaries | **DONE 2026-09-09** | Reviewed, and the review is now executable. There IS a package cycle and it is deliberate: `analytics` reaches `model.repository` (no store of its own), `model.service.StorageBrowserService` (two calls, both about OBJECTS not rows) and `config` (the query-completed announcement borrows the one configured Kafka producer); `AnalyticsDatasetServiceImpl` reaches back for `DatasetResolver`, because reachability is analytics's own rule and a duplicate is how the two would disagree about who may read what. `AnalyticsBoundaryTest` states exactly those five crossings and fails on a sixth — it caught two I had not listed (the Kafka pair) on its first run, and a probe import in `model.service` fails it in the other direction. What it stops is a narrow argued cycle widening into an unexamined one. |
+| Architecture — inspect query plans | **DONE 2026-09-09** | `AnalysisQueryPlanTest` EXPLAINs the builder's own SQL across the matrix that changes the plan and pins four properties: no nested-loop join, no `DELIM_JOIN`, one pass for a plain grouping, exactly two for a Top-N. Production EXPLAIN logging was considered and **declined** — `inSession()` does not hold the SQL text, the only run worth capturing is a slow or failed one whose connection has since been interrupted, and it would spend a second statement while holding one of four permits. |
+| Security — penetration-style authorization tests | **DONE 2026-09-09** | Now systematic: `AnalyticsAuthorizationE2EIT` DISCOVERS every `@RequestMapping` on the four analytics controllers by reflection rather than listing them, so an endpoint cannot be added without being covered — a hand-written list is one somebody forgets to add to, and the forgetting looks like passing. Twenty endpoints, none answering an unauthenticated caller; cross-tenant reads refused as a business ERROR rather than a 500. |
 | Security — secret scanning | **DONE 2026-09-09** | gitleaks over the git HISTORY of both repositories (a working-tree scan calls two of the three `process` findings clean, because the files no longer exist in HEAD). Nine raw findings triaged to three real; five false positives allowlisted with the reason beside each. `.ai/tools/secret-scan.sh` fails when the count goes up, and is proved to by mutation. Full triage in `SECRET-SCAN.md`. **Two exposures were previously unknown: an RSA private key (2024) and a Google OAuth client secret (2022), both in pushed history.** All three need rotation, which is not something a commit can do. |
 | Security — tenant-isolation review | DONE | DatasetResolver `isOwnedByCaller` + `Status.Active`; per-entity `@Filter`; the findById trap handled via scopedFind. |
 | Security — audit completeness | **DONE 2026-09-09** | Schema, preview and profile now write a history row too, successes AND refusals — before this, "who read this file" was answerable for the SQL console and not for the nine other tabs, which is how the file is actually read. The descriptor is a SQL comment (`-- preview page=3 sorted searched`) so it can never be read back as a statement, and it names the FACT of a search without the search term: filter values are the reader's own data. Verified against the live stack — 38 rows written by one E2E run, with row counts and durations. Five tests. **This makes the missing TTL cleanup below more pressing, not less: a reader paging a 1,500-page dataset now leaves 1,500 rows and nothing removes them.** |
-| UX — visual consistency | PARTIAL | Tokens throughout, no raw hex. No systematic pass. |
+| UX — visual consistency | **DONE 2026-09-09** | axe at WCAG A/AA now runs in DARK mode as well as light, across five tabs and a dashboard — a palette that passes light and fails dark is the usual way this breaks. Plus a check for the exact failure a token defined only in the light block produces: text the same colour as its own background. |
 | UX — accessibility | **DONE 2026-09-09** | axe-core over all ten tabs, the browse screen and the library, at WCAG 2.1 A/AA, on every suite run. Found two criticals on the first run, both real: every focusable column-resize separator was missing `aria-valuenow` (Angular drops an attribute bound to `undefined`, and a column is auto-sized until someone resizes it), and the saved-analysis refresh button had no accessible name. The spec states what axe CANNOT see — it will pass a screen that is unusable by keyboard — and `keyboard.spec.ts` covers that half. |
 | UX — keyboard navigation | **DONE 2026-09-09** | The ten view tabs were ten Tab stops; now a roving tabindex — one stop, with Left/Right/Home/End moving between them and wrapping. **Manual activation, not the more common automatic variant**, because four of those tabs trigger a full scan behind a four-permit governor: automatic would spend three permits getting from Details to Canvas. `role="toolbar"` rather than `role="tablist"`, since the tabs sit in three `role="group"` boxes that carry what each costs. Five E2E tests, one asserting arrowing does not open a tab. |
-| UX — responsive behaviour | PARTIAL | Mobile checked once by hand; container queries for the rails. |
+| UX — responsive behaviour | **DONE 2026-09-09** | Checked every run at 390×844 rather than once by hand. A table may be wider than a phone; the PAGE may not, and the check allows wide content that carries its own scroller instead of forbidding it. |
 | UX — loading/error/empty states | DONE | Four dataset-pane states, four chart empty states, distinct quality empties. |
 | UX — dense data-table ergonomics | **DONE — the audit was stale, not the feature missing** | Re-checked against document 06 line by line: all EIGHT Data-view capabilities are built — pagination, column resize, sorting, filtering, search, column visibility, copy cell, horizontal scroll. The "2 of 8" figure predates the sort/search/filter work and was carried forward without re-reading. Now pinned by five E2E tests so the number cannot go stale again in the other direction. One real fix found while writing them: the screen-reader caption said "1 rows of 1 columns". |
 | Performance — benchmark regression suite | **DONE 2026-09-09** | The harness measured; `BenchmarkRegression` now NOTICES. Every run compares against the best median on record for the same label/measure/format/path, and the endpoint says so in its own message rather than only in a log on a server. **Baseline is the BEST on record, not the previous run** — against the previous run, two runs each 15% slower are each inside a 25% tolerance and the pair is 32% slower than where it started. A FILE_OPEN is never compared with a QUERY (three sessions against one) and CSV is never compared with Parquet (that comparison is the point of the harness). Ten tests, including the trap that a run reading history back after writing finds itself as its own baseline. Reports rather than throws: these are timings from a real network on whatever machine ran them. |
-| Performance — profile expensive queries | MISSING | One agent profiled chart parsing. Nothing else. |
-| Performance — optimize high-cardinality analytics | MISSING | No Top-N/high-cardinality path exists to optimise. |
+| Performance — profile expensive queries | **DONE 2026-09-09** | The Top-N path profiled with EXPLAIN on DuckDB 1.1.3 and two measured inefficiencies fixed: a correlated EXISTS that degraded to a `DELIM_JOIN` whenever a filter was present (75ms→30ms on 4M rows), and a `count(DISTINCT)` duplicating a list already being built (491ms→392ms on 8M). Both result-identical; the plan test above stops either being lost. |
+| Performance — optimize high-cardinality analytics | **DONE 2026-09-09** | The row was stale — a Top-N path with an Other bucket does exist. Profiled and improved (above). The two passes it makes are inherent and correct: the ranking must be known before the roll-up can be aggregated from raw rows, which is what makes Other a real total rather than a subtraction. Verified live over 250,000 rows: top 10 customers plus Other sum to the filtered total, to the penny. |
 | Performance — verify cancellation | **DONE — row was stale** | Cancellation exists and is real: `RunningQueries.Handle`, a single watchdog thread, `Statement.cancel()` (measured working on 1.1.3 where `setQueryTimeout` is a no-op), QUEUED→RUNNING transitions that honour a cancel arriving while queued, and cancel-before-close ordering. Re-verified 2026-09-09. |
-| Performance — optimize storage reads | PARTIAL | `knownTotal` removed the repeat COUNT on every page turn. |
+| Performance — optimize storage reads | **DONE 2026-09-09** | `knownTotal` removed the repeat COUNT per page turn; a **cell budget** now bounds a response by rows×columns rather than rows alone (100,000 rows of ten columns was 12.9 MB of JSON and 61 MB of heap; it is 1.25 MB and 6 MB now, and says it was cut); and the preview's page size no longer bypasses the ceiling — `?pageSize=100000` returned a hundred-thousand-row payload through an endpoint meant to return one page. |
 | Reliability — retry policy for transient storage errors | **DONE 2026-09-09** | One retry, and only for the BUILT-IN reads (schema, preview, profile) — user SQL is not retried, because that caller holds a run id and may be watching a stop button. A fresh session per attempt, since the broken thing IS the connection to the object store. Classified narrowly: connection resets and 5xx/429/`SlowDown` retry; 401/403, 404, parser errors, malformed CSV, memory pressure and timeouts do not. **The classifier test found a real bug: S3's throttling code is `SlowDown`, one word, and the spaced check matched nothing.** Eleven tests, proved load-bearing by mutation. |
 | Reliability — idempotent export/write | **DONE 2026-09-08** | Two mechanisms, because the cost of being wrong is somebody's data: the stamp went to milliseconds, and `refuseToOverwrite` asks the platform's own storage service whether the key is taken before writing. `overwrite=true` is honoured — replacing yesterday's export on purpose is a real thing to want; doing it by accident is not. Fails CLOSED: an unreadable answer refuses the write rather than assuming the key is free, which would restore the clobber precisely when the store is unhealthy and it is hardest to notice. Four tests, proved load-bearing by removing the guard and watching the two refusals fail while the two controls stayed green. |
 | Reliability — cleanup of temporary resources | **DONE 2026-09-09, and smaller than the row implies** | Audited first: DuckDB deliberately writes no temp files (`preserve_insertion_order=false`, no temp directory — DuckDbSessionFactory:103), and `RunningQueries.inFlight` cannot leak because `close()` is the only removal and sits in an outer `finally` covering completion, failure, timeout, cancellation and a caller who never got a permit. The one thing that grows is `analytics_query_run`. A retention cron now exists (`AnalyticsHistoryCleanupCron`, ShedLock, hourly) — **defaulted OFF**, because V32 argued deliberately for leaving that table unpruned and named the condition that would change its mind (a machine issuing queries on a schedule), which read-auditing is not. Mechanism shipped, policy left to whoever owns the audit question. Five tests; the default-off test was rewritten after mutation showed the first version did not guard the default at all. |
@@ -41,10 +42,10 @@ Final gate, verbatim from the document, with the truth beside it:
 
 | Gate | Status |
 |---|---|
-| backend build passes | DONE — `mvn -o package`, 1,098 tests, 0 failures |
-| frontend build passes | DONE — `ng build` clean, 1,065 tests |
+| backend build passes | DONE — `mvn -o package`, **1,233** tests, 0 failures (2026-09-14) |
+| frontend build passes | DONE — `ng build` clean, **1,228** tests (2026-09-14) |
 | migrations pass | **CORRECTED** — V31/V32/V33 were applied; V34 was NOT, and this line claimed otherwise. The claim was true of a throwaway scratch database, not of `etl_job`. Now applied; seven analytics tables live, and a Postgres integration test guards the drift. |
-| all critical tests pass | DONE. Backend 1,098 / frontend 1,065, both clean. **E2E now exists** — 8 Playwright specs over the real 150,000-row fixture, all passing, one proven load-bearing by mutation. **The 20 analytics integration tests do run in `mvn package`** — they are named `*IntegrationTest`, which matches surefire's default includes, and re-running them under `-Danalytics.it.required=true` (which turns "infrastructure absent" from a skip into a failure) passes with real HTTP reads logged against MinIO :9000 and LocalStack :4566. Separately, eight pre-existing non-analytics `*IT.java` classes never run: surefire's defaults do not match `*IT` and there is no Failsafe plugin. |
+| all critical tests pass | DONE. **2026-09-10: backend 1,154 unit / frontend 1,143 unit / 45 Playwright / 102 backend E2E, every one green against a stack rebuilt from this source.** That last clause is the point: :4400 and :9098 are containers, and a run against a stale bundle failed two specs that the same code passes — one of them looking like an accessibility regression. Rebuild both before believing a browser run. **E2E now exists** — Playwright specs over the real 150,000-row fixture, all passing, one proven load-bearing by mutation. **The 20 analytics integration tests do run in `mvn package`** — they are named `*IntegrationTest`, which matches surefire's default includes, and re-running them under `-Danalytics.it.required=true` (which turns "infrastructure absent" from a skip into a failure) passes with real HTTP reads logged against MinIO :9000 and LocalStack :4566. **CORRECTED 2026-09-09** — I recorded here, more than once, that eight `*IT.java` classes had never run. That was wrong. `run-e2e.sh` runs the five `*E2EIT` classes plus `HarnessSmokeIT` (86 tests, recorded in this repo's own README), and `run-kafka-matrix.sh` covers `KafkaSecurityMatrixIT`. Only **`ContextProbeIT` and `OpenSearchRagClientIT`** matched no runner's glob and had genuinely never executed. The real defect was that none of them sat in a lifecycle phase, so `mvn verify` reached none and nothing could gate a build on them. **Fixed**: a `maven-failsafe-plugin` under an `it` profile — `mvn -o verify -Pit`. Behind a profile because every one needs Docker services, and a `verify` that goes red on a laptop with no Docker running is a `verify` nobody runs. `ContextProbeIT` now runs and passes. |
 | **actual benchmark evidence captured** | **PASSES 2026-09-09 — six rows recorded through the harness, on the real request path.** See below. |
 | **no fake/mock completion claims** | **Held, and enforced: the Azure refusal's "S3 and MinIO have been verified" was removed on 2026-09-08 once it emerged every S3 connection points at LocalStack, so the AWS path is unexercised too.** |
 
@@ -283,3 +284,80 @@ Delivered: a 250,000-row × 21-column sample dataset in the bucket, ten independ
 assertions against it, and twenty reports of 106 widgets — every widget proved to run against the
 real object. Not started: the UI/UX work, and the widget types that need wiring (line, area,
 stacked, histogram, KPI card).
+
+## Live updates, chart palette and the widget tile (2026-09-14)
+
+Five areas investigated in parallel, 32 findings verified, all acted on except the five listed as
+deliberately open. **The socket transport was never at fault** — it was verified healthy end to end
+at runtime — and almost nothing was ever published to it.
+
+Delivered: status now announced from `BulkAction.changeJobStatus`, the one method all nine writers
+pass through; the run-logs screen subscribed to `job.log` and its poll fixed (it had re-armed
+exactly once); `publishChanged` wired to create/update/toggle/delete **after commit**; timestamps
+read in the zone the application pins for itself rather than in the reader's own -- correcting an
+investigation finding that was WRONG and a first fix shipped on it, which made the jobs list report
+healthy runs as stalled; the scheduler stopped from running real jobs out of every test run; an eight-colour categorical palette that is no
+longer the status ramp; the widget tile's hidden rows made reachable without a second query; height
+and caption on `widget_config` with no migration; `rankedShare` and `cumulative` added; a legend for
+stacked bars.
+
+Verified: backend 1242 unit + 102 E2E, frontend 1248 unit, Playwright 45 — all green, every fix
+mutation-proven. Full account in `REALTIME-AND-UI-SWEEP.md`.
+
+## Job assistant QA (2026-09-14)
+
+Fifty-plus cases over `/jobs/:jobId/assistant`. Eleven defects, all fixed, each mutation-proven.
+
+The pattern table was the problem, and the consequence of a miss was the part nobody had costed:
+an unrecognised question is handed to a configured AI agent, so a gap in the table did not degrade
+to "I don't know" — it degraded to a model answering about a job whose real figures were one match
+away. Worst of them: the scope guard required a three-digit job id, so **"tell me about job 99" was
+answered with a summary of the job in view**, and "what about job 12" went to the model with that
+job's facts attached.
+
+Delivered: the scope guard split so the word "job" admits any id length while a bare `#` keeps its
+floor; plural "jobs" read as fleet-wide; `\bstat` bounded so it stops matching "state" and "status";
+history read before target so "the log file" is runs, not a bucket; failures read before stats;
+new `capability` and `action` intents so a greeting and "run it now" are answered here rather than
+by a model that cannot act; sixteen plain phrasings routed to answers that already existed;
+`priority` shown, having been collected and rendered nowhere. Component: the reload effect no longer
+depends on the agent list — it was **fetching the job twice per load and wiping the transcript**;
+Enter now respects the in-flight guard the Ask button already had; an empty success body shows an
+error rather than a blank page.
+
+Verified: frontend 1445 unit (1378 before), all green; `next-app` rebuilt and checked on the running
+app — one job fetch per load, nine previously-broken phrasings answered locally. Two non-defects
+recorded so they are not chased again. Full account in `JOB-ASSISTANT-QA.md`.
+
+## RAG, Redis and the file chat (2026-09-14)
+
+Reported as "we are not creating the vector data", with the PDF chat named. The vectors were being
+created correctly -- 225 chunks, all with a real 768-float L2-normalised embedding. **The text in
+them had been silently destroyed since the feature shipped.**
+
+The `_bulk` body went out as `application/x-ndjson` with no charset, and Spring's
+StringHttpMessageConverter special-cases UTF-8 only for types compatible with `application/json`,
+so it fell back to ISO-8859-1. Characters above U+00FF became `?`; characters in U+0080..U+00FF
+became a byte that is not valid UTF-8, so OpenSearch rejected that document and the chunk vanished
+mid-file. The tell: across 225 chunks of CVs, PDFs, CSVs and Markdown, not one character above
+U+007F, and 108 question marks.
+
+Delivered: the charset; a bulk reporter that counts what was actually stored and names the lost
+chunk indexes, replacing a single WARN that named nothing and returned void; completeness derived
+from chunkIndex contiguity rather than from a document count that agrees perfectly with an index
+that has a hole in it; a real filtered k-NN query in place of dragging every chunk's 768 floats
+over HTTP (229 KB per question); `isAvailable()` no longer running three real inferences per
+message; bounded embedding batches so a 588-chunk file is no longer unindexable forever; a Redis
+outage degrading to a cache miss instead of a 500, including the FTP listing cache that bypasses
+the handler; cache eviction on upload/delete/rename; `json_mode` actually reaching the provider;
+the agent's vision model and instructions reaching the model that looks at an image; a failed
+vision call no longer cached as the file's text and embedded into the index; and emailing a chat
+export through the existing FileShareService rather than a second copy of its rules.
+
+Verified: backend **1392**, frontend **1457**, both green; 50 new tests; the charset and contiguity
+fixes both mutation-proven. Both containers rebuilt and healthy.
+
+**Open:** the end-to-end re-index through the deployed stack was never watched -- the browser JWT
+had expired. And 205 chunks in the live index are still Latin-1 damaged: the fix stops new damage
+but does not repair what is stored, which needs a deliberate reindex. Full account in
+`RAG-CHAT-REVIEW.md`.
