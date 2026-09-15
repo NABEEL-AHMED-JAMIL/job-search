@@ -144,22 +144,30 @@ share dialog, not `window.prompt`.
   hard-coding completeness back to `true` fails 3 more.
 - Backend **1392** passing, frontend **1457** passing. Both containers rebuilt and healthy.
 
-## Not verified, and why
+## Verified end to end on the deployed stack
 
-**The end-to-end re-index through the deployed stack was not completed.** The browser session's JWT
-had expired, so the chat request never reached the backend, and re-indexing only runs when a
-question is asked about a file with no chunks. The fix is proven at unit level against the real
-converter and the containers are deployed, but nobody has yet watched a real PDF go in and come
-back with its `§` intact. **That is the first thing to do with a live login.**
+The 20 chunks for `etl-bucket/test-file/Nabeel Ahmed Jamil Java Engineer.pdf` were deleted from
+`file-rag-chunks` to force a clean re-index, and the file was then asked a question through the
+running console so the rebuilt backend indexed it. The same file, measured before and after:
 
-## Live data changed during this work
+| | before the fix | after |
+|---|---|---|
+| chunks | 20 | 20 |
+| characters above U+007F | **0** | **84** |
+| literal `?` | **84** | **0** |
+| chunkIndexes | 0..19 | 0..19, contiguous |
 
-The 20 chunks for `etl-bucket/test-file/Nabeel Ahmed Jamil Java Engineer.pdf` were **deleted** from
-`file-rag-chunks` to force a clean re-index (they held 84 question marks and zero characters above
-U+007F). That file currently has no index entries; it will re-index automatically the next time
-anyone asks a question about it, which is the designed behaviour for a file with zero chunks.
+**Exactly 84 against 84.** Every character the encoding had destroyed came back, and each one is a
+character a CV really contains: `–` en-dash, `’` curly apostrophe, `●` bullet. Nothing else about
+the document changed, and `embeddingModel` is present on every chunk.
 
-**The other 205 chunks are still Latin-1 damaged.** The fix prevents new damage; it does not repair
+This is the measurement that closes the loop: the unit tests prove Spring's converter picks the
+right encoding, and this proves the whole path -- extract, chunk, embed, bulk-write, read back --
+now preserves the file.
+
+## Live data changed during this work, and what is still damaged
+
+One file was re-indexed, as described above. **The other 205 chunks are still Latin-1 damaged.** The fix prevents new damage; it does not repair
 what is already stored, because a chunk set is only rewritten when a file's etag changes or its
 chunks are removed. Repairing the rest means deleting the index and letting it rebuild on demand —
 a deliberate operation on live data, not something to do quietly.

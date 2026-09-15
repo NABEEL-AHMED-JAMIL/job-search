@@ -357,7 +357,11 @@ export through the existing FileShareService rather than a second copy of its ru
 Verified: backend **1392**, frontend **1457**, both green; 50 new tests; the charset and contiguity
 fixes both mutation-proven. Both containers rebuilt and healthy.
 
-**Open:** the end-to-end re-index through the deployed stack was never watched -- the browser JWT
-had expired. And 205 chunks in the live index are still Latin-1 damaged: the fix stops new damage
-but does not repair what is stored, which needs a deliberate reindex. Full account in
+Proven end to end on the deployed stack: one file's chunks were deleted, a question re-indexed it,
+and the same 20 chunks came back carrying **84 characters above U+007F and zero question marks**,
+against 0 and 84 before -- every destroyed character restored, exactly.
+
+**Open:** 205 chunks in the live index are still Latin-1 damaged. The fix stops new damage but does
+not repair what is stored, because a chunk set is only rewritten when a file's etag changes or its
+chunks are removed. Repairing them means a deliberate reindex. Full account in
 `RAG-CHAT-REVIEW.md`.
