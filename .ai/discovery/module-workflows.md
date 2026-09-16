@@ -168,6 +168,13 @@ id, capped by `QUEUE_FETCH_LIMIT`. The loop stops at a 7-minute budget (`DISPATC
 because the ShedLock lasts ten and a batch that outruns the lock can be dispatched twice by
 another instance.
 
+> **Task types are per-workspace, and were not always.** `source_task_type.tenant_id` used to be
+> nullable, where NULL meant "shared with every workspace" -- and NULL was also what a platform
+> admin's creation produced, so five per-agency task types were on all fourteen workspaces'
+> settings screens with their Kafka topic names. V39 made the column NOT NULL and removed the
+> shared reading from both the list query and `isSourceTaskTypeVisibleToCaller`. A workspace now
+> needs a task type of its own before it can build any task.
+
 **Two things pick where a job goes, and they are easy to conflate.** The *topic* comes from the task
 type's `queue_topic_partition`, so a task type can have its own topic. The *work* is chosen by the
 `pipelineId` **inside the payload**, not by the topic — which is why the deployed task types nearly
@@ -404,8 +411,10 @@ file in a bucket → extract text → chunk → embed (Ollama) → index (OpenSe
 > returns UTF-8 only if the content type `isCompatibleWith(application/json)`, otherwise
 > `ISO_8859_1`. `application/x-ndjson` is not compatible, so every bulk body went out as Latin-1:
 > each indexed chunk was mangled, and any chunk carrying U+0080–U+00FF was **rejected outright and
-> lost from the middle of its file**. Fixed by setting the charset explicitly. **205 chunks in the
-> live index are still damaged** — the fix prevents new damage, it does not repair stored data. A
+> lost from the middle of its file**. Fixed by setting the charset explicitly. **This is now moot on this
+> deployment**: the `file-rag-chunks` index was deleted in the 2026-09-15 clean slate along with
+> the files it indexed, so the 205 damaged chunks are gone rather than repaired. Anything indexed
+> from here carries the fix. On a deployment that was NOT wiped, they would still be damaged — the fix prevents new damage, it does not repair stored data. A
 > deliberate reindex is still outstanding.
 
 ### 6.6 `object-browser`
@@ -464,7 +473,7 @@ supply prompts and models to both this and file chat.
 | Your change is not running | `:4400`/`:9098` are **containers**. `process/Dockerfile` **copies** `target/*.jar`, so `mvn test` is not enough — run `mvn package` first |
 | Tenant is null in new code | it runs off the request thread; `TenantContext` is a ThreadLocal |
 | A `-Dtest=A+B` run passes suspiciously fast | wrong separator; use commas, or `failIfNoTests=false` reports a false green |
-| RAG answers miss text from mid-file | the Latin-1 damage; 205 chunks still need reindexing |
+| RAG answers miss text from mid-file | the Latin-1 damage, on any index built before 2026-09-15 |
 
 ---
 

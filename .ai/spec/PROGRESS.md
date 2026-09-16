@@ -440,3 +440,49 @@ measured 4.88:1 — it passes, and would have been "fixed" on a hunch without th
 
 **34 new tests, 1545 green.** Four mutations caught, including trusting a reported word length of
 zero (which collapses the highlight to one letter on Safari) and dropping the stale-generation guard.
+
+## 2026-09-15 — F768947, a task type belongs to one workspace, and a clean slate
+
+**F768947 medical imaging AI analysis.** Reads images from a folder, asks a vision model what is
+visible in each, writes one structured JSON result per image. The prompt and the model are
+operator-editable form fields, because the prompt turned out to be most of the quality: a first
+draft offering the model an "if the image is unreadable, say so" exit returned exactly that on a
+good chest film, where the same image and model without the exit returned four anatomical
+findings. The non-diagnostic notice is stamped on every document AFTER the model has spoken and
+outside the prompt's reach, precisely because the prompt is editable. 33 tests, three mutations.
+
+**And then measured whether it is fit for the domain, which is the part worth keeping.** The
+dataset carries ground-truth labels, so this is answerable rather than arguable. Twelve images,
+four classes, one prompt: llava:7b returned the same four anatomical structures for every one.
+Nine of nine disease cases -- covid-19, tuberculosis, bacterial pneumonia -- were described as
+normal, three of them volunteering "no apparent abnormalities or pathologies". One covid film came
+back as "a chest X-ray of a fetus in utero". **Zero sensitivity, and false negatives are the
+dangerous direction.** The ETL is sound and the model is a placeholder; the discrimination probe
+should become the acceptance gate before any model ships here.
+
+**Task types leaked across workspaces.** `source_task_type.tenant_id` was nullable and NULL meant
+"shared with every workspace" -- which was fine for the one genuinely shared row and an accident
+for five others, because `getSourceTaskType` set the owner to
+`isPlatformAdmin() ? null : getTenantId()`. So "Test User 1-5 Task" and their topic names were on
+all fourteen workspaces' settings screens. V39 gave every row an owner from what actually used it,
+made the column NOT NULL, and removed the shared reading from the list query and the visibility
+helper. Creation now asks a platform admin which workspace. Six tests, mutation-proven.
+
+Two things checked and found CLEAN in the same sweep, recorded so they are not re-audited:
+`/reports` (tenantClause partitions exactly -- 228 + 82 = 310, and no tenant id yields zero rows
+rather than all of them) and every other query in QueryService. `/ai/models` is the one still
+open: it is annotated `hasRole('TENANT_ADMIN')` but acts on the single shared Ollama server, so
+23 tenant admins across 9 workspaces can each delete a model the others depend on.
+
+**Clean slate, at the user's explicit request, all five stores.** Postgres (all tenant data),
+MinIO (both buckets emptied -- the 12,534-image chest X-ray dataset went with it, confirmed
+first), OpenSearch (`job-audit-logs` 3,354 docs and `file-rag-chunks` 227), Redis, and both Kafka
+consumer groups reset to latest. Survivors, exactly as the recipe requires: `admin@platform.local`
+(1000), all 144 platform `lookup_data` rows, the Platform Local Broker (1009), the etl-bucket and
+etl-avatar storage connections, and Liquibase's own changelog. The FK order was proved by a
+rolled-back dry run before anything was committed. `TenantSeedService` recreated Default on
+restart and the application boots clean.
+
+One loose end the wipe created and closed: the admin's `avatar_key` still pointed at a deleted
+object, which `previewObject` answers with a **500 rather than a 404**. The pointer is cleared;
+the 500-on-missing-object is pre-existing and still there.
