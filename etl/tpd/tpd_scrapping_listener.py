@@ -6,13 +6,15 @@ import os
 import time
 import signal
 import threading
+import importlib
 from dotenv import load_dotenv
 from multiprocessing import Process
 from concurrent.futures import ThreadPoolExecutor
 # Kafka
 from etl.tpd.tpd_kafka_config import create_consumer
+from etl.tpd.offset_tracker import OffsetTracker
 from etl.util.xml_parser import pipeline_xml_parser
-from etl.util.job_state_client import JobStateClient
+from etl.util.etl_helpers import job_state
 from etl.util.job_status import JobStatus
 from etl.util.logging_config import get_logger
 
@@ -39,49 +41,47 @@ MAX_WORKERS = 25
 MAX_QUEUE_SIZE = 50
 semaphore = threading.Semaphore(MAX_WORKERS + MAX_QUEUE_SIZE)
 
-
-class OffsetTracker:
-    """
-        Tracks which offsets are still being worked on, so a commit never claims more than is
-        actually finished.
-
-        consumer.commit() with no arguments commits the consumer's *position*, and poll() has
-        already moved that past every record in the batch. With a pool of workers the first task
-        to finish was therefore committing the whole batch, including records still running and
-        records not yet started -- so a restart mid-batch dropped them, leaving their jobs sitting
-        in Queue for ever with no message left to deliver them.
-
-        Committing each record's own offset as it finishes is no safer, because the pool finishes
-        out of order: committing offset 10 while 7 is still running would skip 7 on restart. So a
-        partition may only be committed up to its lowest offset still in flight.
-    """
-
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._pending = {}      # partition -> set of offsets being worked on
-        self._done = {}         # partition -> highest offset finished
-
-    def started(self, partition, offset):
-        with self._lock:
-            self._pending.setdefault(partition, set()).add(offset)
-
-    def finished(self, topic, partition, offset):
-        """Marks one record done and returns the offsets safe to commit, or None."""
-        from kafka import TopicPartition, OffsetAndMetadata
-        with self._lock:
-            pending = self._pending.get(partition, set())
-            pending.discard(offset)
-            highest = self._done.get(partition)
-            self._done[partition] = offset if highest is None else max(highest, offset)
-            # Anything at or above the lowest still-running offset is not ours to claim.
-            safe = min(pending) - 1 if pending else self._done[partition]
-            if safe < 0:
-                return None
-            return {TopicPartition(topic, partition): OffsetAndMetadata(safe + 1, None)}
-
-
 offset_tracker = OffsetTracker()
 shutdown_event = threading.Event()
+
+# ------------------------------------------------------------------------------
+# Pipeline Router
+#
+# pipeline id -> (module, entry function). A table rather than a chain of elif
+# branches: with nineteen pipelines the chain was most of execute_task, and a
+# pipeline whose branch was added but whose parser was not (or the reverse) is
+# invisible in a chain and a one-line diff to check against a table.
+#
+# The import stays inside the dispatch, not at module scope, and that is load-bearing:
+# F768927 pulls in torch and whisper, F768920 the firebase SDK. Importing all of them
+# to run one would make every worker pay for every pipeline's dependencies.
+# ------------------------------------------------------------------------------
+PIPELINE_TASKS = {
+    "F768926": ("etl.tasks.etl_hurricanes_f768926", "fetch_and_extract_all_seasons"),
+    "F768927": ("etl.tasks.mp3_noise_processing_extract_txt_f768927", "mp3_noise_processing_extract_txt"),
+    "F768920": ("etl.tasks.zanium_firebase_data_export_f768920", "zanium_firebase_data_export"),
+    "F76800": ("etl.tasks.send_email_batch_f76800", "send_email_batch"),
+    # Object-storage ETL family
+    "F768930": ("etl.tasks.csv_to_json_f768930", "csv_to_json"),
+    "F768931": ("etl.tasks.csv_schema_validate_f768931", "csv_schema_validate"),
+    "F768932": ("etl.tasks.csv_deduplicate_f768932", "csv_deduplicate"),
+    "F768933": ("etl.tasks.csv_filter_rows_f768933", "filter_csv_rows"),
+    "F768934": ("etl.tasks.csv_merge_f768934", "merge_csv_files"),
+    "F768935": ("etl.tasks.csv_aggregate_f768935", "csv_group_by_aggregate"),
+    "F768936": ("etl.tasks.csv_select_rename_f768936", "csv_select_rename"),
+    "F768937": ("etl.tasks.csv_quality_report_f768937", "csv_quality_report"),
+    "F768938": ("etl.tasks.csv_split_f768938", "split_csv_into_chunks"),
+    "F768939": ("etl.tasks.object_compress_f768939", "compress_objects_for_archival"),
+    "F768940": ("etl.tasks.csv_to_postgres_f768940", "csv_to_postgres"),
+    "F768941": ("etl.tasks.postgres_to_csv_f768941", "export_postgres_query_to_csv"),
+    "F768942": ("etl.tasks.csv_join_f768942", "join_csv_objects"),
+    "F768943": ("etl.tasks.csv_snapshot_diff_f768943", "csv_snapshot_diff"),
+    "F768944": ("etl.tasks.object_retention_f768944", "sweep_objects_for_retention"),
+    "F768945": ("etl.tasks.csv_partition_f768945", "csv_partition"),
+    "F768946": ("etl.tasks.folder_for_each_f768946", "folder_for_each"),
+    # Medical imaging. Pillow and the vision model are reached only when this one runs.
+    "F768947": ("etl.tasks.xray_ai_analysis_f768947", "xray_ai_analysis")
+}
 
 # ------------------------------------------------------------------------------
 # Graceful Shutdown
@@ -98,8 +98,14 @@ signal.signal(signal.SIGINT, shutdown_handler)
 # ------------------------------------------------------------------------------
 def start_kafka_listener():
     consumer = None
-    # Create dependencies inside process
-    job_state_client = JobStateClient(etl_event_url)
+    # The SHARED client, not a second one.
+    #
+    # Pipeline.log() buffers its lines on the singleton in etl_helpers.job_state(); this used to
+    # build a JobStateClient of its own and then call flush_logs on it, which emptied a buffer
+    # nothing had ever written to. Any run that ended before the batch-size or batch-age
+    # threshold tripped lost every line it had logged, which in practice was all of them -- the
+    # audit log for a pipeline run came out empty and there was nothing to say why.
+    job_state_client = job_state()
     try:
         logger.info("Starting Kafka consumer")
         consumer = create_consumer(kafka_scrapping_topic, kafka_servers, scrapping_group_id)
@@ -107,6 +113,9 @@ def start_kafka_listener():
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             while not shutdown_event.is_set():
                 message = consumer.poll(timeout_ms=1000)
+                # The workers hand their finished offsets back through the tracker and the
+                # commit happens here, because the consumer belongs to this thread alone.
+                offset_tracker.commit_ready(consumer)
                 if not message:
                     continue
                 for _, records in message.items():
@@ -117,31 +126,31 @@ def start_kafka_listener():
                         # Control memory
                         semaphore.acquire()
                         offset_tracker.started(record.partition, record.offset)
-                        executor.submit(execute_task_wrapper,record, payload, consumer, job_state_client)
+                        executor.submit(execute_task_wrapper,record, payload, job_state_client)
     except Exception as ex:
         logger.exception("Kafka listener failed %s",str(ex))
     finally:
         if consumer:
+            # Leaving the pool waited for the running tasks, so what they finished on the way
+            # out is still sitting in the tracker unclaimed.
+            offset_tracker.commit_ready(consumer)
             consumer.close()
             logger.info("Kafka consumer closed")
 
 # ------------------------------------------------------------------------------
 # Thread Wrapper
 # ------------------------------------------------------------------------------
-def execute_task_wrapper(message, payload, consumer, job_state_client):
+def execute_task_wrapper(message, payload, job_state_client):
     try:
         execute_task(message, payload, job_state_client)
-        # Commit only after success, and only up to the lowest offset still being worked on.
-        offsets = offset_tracker.finished(message.topic, message.partition, message.offset)
-        if offsets:
-            consumer.commit(offsets)
-            logger.info("Kafka offset committed partition=%s offset=%s",
-                        message.partition, message.offset)
+        # Record the offset only after success, and only up to the lowest offset still being
+        # worked on. The polling thread is the one that commits it.
+        offset_tracker.finished(message.topic, message.partition, message.offset)
     except Exception as ex:
         logger.exception("Task failed %s",str(ex))
         # A failed record must not hold its partition's commit point for ever; the job is already
-        # marked Failed, so let the offsets past it move on.
-        offset_tracker.finished(message.topic, message.partition, message.offset)
+        # marked Failed, so let the offsets past it move on -- without claiming this one.
+        offset_tracker.failed(message.partition, message.offset)
     finally:
         semaphore.release()
 
@@ -173,26 +182,12 @@ def execute_task(message, payload, job_state_client):
         # --------------------------------------------------
         # Pipeline Router
         # --------------------------------------------------
-        if pipeline_id == "F768924":
-            from etl.tasks.pdf_highligter_form_fill_F768924 import (pdf_highlighter_form_film)
-            pdf_highlighter_form_film(task_payload)
-        elif pipeline_id == "F768925":
-            from etl.tasks.pdf_highlighter_f768925 import (pdf_highlighter_text_extraction_etl)
-            pdf_highlighter_text_extraction_etl(task_payload)
-        elif pipeline_id == "F768926":
-            from etl.tasks.etl_hurricanes_f768926 import (fetch_and_extract_all_seasons)
-            fetch_and_extract_all_seasons(task_payload)
-        elif pipeline_id == "F768927":
-            from etl.tasks.mp3_noise_processing_extract_txt_f768927 import (mp3_noise_processing_extract_txt)
-            mp3_noise_processing_extract_txt(task_payload)
-        elif pipeline_id == "F768920":
-            from etl.tasks.zanium_firebase_data_export_f768920 import (zanium_firebase_data_export)
-            zanium_firebase_data_export(task_payload)
-        elif pipeline_id == "F76800":
-            from etl.tasks.send_email_batch_f76800 import (send_email_batch)
-            send_email_batch(task_payload)
-        else:
+        route = PIPELINE_TASKS.get(pipeline_id)
+        if not route:
             raise ValueError(f"Unknown pipeline {pipeline_id}")
+        module_name, function_name = route
+        task_function = getattr(importlib.import_module(module_name), function_name)
+        task_function(task_payload)
 
         # Log lines are buffered, so they must be sent before the run is marked done -- a
         # reader opening a completed job's logs must not find the last of them in a buffer.
@@ -212,7 +207,16 @@ def extract_task_payload(pipeline_id, payload):
     parser = pipeline_xml_parser.get(pipeline_id)
     if not parser:
         raise ValueError(f"No parser found for {pipeline_id}")
-    return parser(payload.get("taskPayload"))
+    task_payload = parser(payload.get("taskPayload"))
+    # Every parser answers None for XML it could not read. Without this the caller's
+    # task_payload["job_id"] = ... is what fails, and the operator is shown
+    # "'NoneType' object does not support item assignment" for what is really a
+    # malformed payload on their task.
+    if task_payload is None:
+        raise ValueError(
+            f"Task payload for {pipeline_id} could not be parsed; check the task's XML"
+        )
+    return task_payload
 
 # ------------------------------------------------------------------------------
 # Job Status

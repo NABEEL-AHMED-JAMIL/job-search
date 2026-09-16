@@ -62,94 +62,6 @@ def parse_926(xml_payload):
         logger.exception("Failed to parse task payload XML")
         return None
 
-def parse_925(xml_payload):
-    """
-        Method use to parse pipeline config (session, pdfHighlighter, description)
-        <?xml version="1.0" encoding="UTF-8" standalone="no"?>
-        <pipeline>
-            <session>
-                <username>jessica.davis</username>
-                <password>jessica.davis</password>
-                <auth> http://localhost:9999/v1/api/auth/login</auth>
-            </session>
-            <pdfHighlighter>
-                <organizationsTask>ZER23428</organizationsTask>
-                <fieldMappingUrl>http://localhost:9999/v1/api/organizations/{organizationUuid}/pdf-highlighters/by-name/{organizationsTask}</fieldMappingUrl>
-                <targetInputFileFolder>highlighter/input</targetInputFileFolder>
-                <targetOutputFileFolder>highlighter/output</targetOutputFileFolder>
-                <targetOutputType>JSON</targetOutputType>
-            </pdfHighlighter>
-            <description>Executes the complete form automation workflow by retrieving form definitions and field mappings from FormCraft, reading all supported files from the target folder, extracting and transforming the data into CSV format, invoking the form-filling API to populate the target form, and submitting the completed form once processing is finished.</description>
-        </pipeline>
-    """
-    try:
-        root = ET.fromstring(xml_payload)
-        session = root.find("session")
-        pdf_highlighter = root.find("pdfHighlighter")
-        return {
-            "id": "F768925",
-            "session": {
-                "username": session.find("username").text,
-                "password": session.find("password").text,
-                "auth": session.find("auth").text
-            },
-            "pdfHighlighter": {
-                "organizationsTask": pdf_highlighter.find("organizationsTask").text,
-                "fieldMappingUrl": pdf_highlighter.find("fieldMappingUrl").text,
-                "targetInputFileFolder": pdf_highlighter.find("targetInputFileFolder").text,
-                "targetOutputFileFolder": pdf_highlighter.find("targetOutputFileFolder").text,
-                "targetOutputType": pdf_highlighter.find("targetOutputType").text,
-            },
-            "description": root.find("description").text
-        }
-    except Exception:
-        logger.exception("Failed to parse pipeline config XML")
-        return None
-
-def parse_924(xml_payload):
-    """
-        Method use to parse F768924
-        <?xml version="1.0" encoding="UTF-8" standalone="no"?>
-        <pipeline>
-            <session>
-                <accounts>highlighter/account/cvsh-user-account.csv</accounts>
-                <auth_url> http://localhost:9999/v1/api/auth/login</auth_url>
-            </session>
-            <highlighter>
-                <input_object_path>highlighter/output/job_1014_queue_1050/0dcb58be-435f-44b7-8706-cf86b5c53c10/pdf_highlighter_extract_1785025740.json</input_object_path>
-                <form_uuid>915419ee-296e-4708-b168-868c8bd5b8bd</form_uuid>
-                <form_description>Unique UUID of the form used by the ETL process.</form_description>
-                <panel_url>http://localhost:9999/v1/api/organizations/{organization_uuid}/forms/{form_uuid}/panels</panel_url>
-                <panel_description>URL of the source panel or web page that the ETL process accesses to extract data.</panel_description>
-                <fields_url>http://localhost:9999/v1/api/organizations/{organization_uuid}/forms/{form_uuid}/panels/{panel_uuid}/fields</fields_url>
-                <fields_description>URL of the page or endpoint containing the form fields that the ETL process uses to extract or map data.</fields_description>
-                <submissions_url>http://localhost:9999/v1/api/organizations/{organization_uuid}/forms/{form_uuid}submissions</submissions_url>
-                <submissions_description>URL of the page or endpoint used by the ETL process to access and retrieve form submission data.</submissions_description>
-            </highlighter>
-        </pipeline>
-    """
-    try:
-        root = ET.fromstring(xml_payload)
-        session = root.find("session")
-        highlighter = root.find("highlighter")
-        return {
-            "id": "F768924",
-            "session": {
-                "accounts": session.find("accounts").text,
-                "auth_url": session.find("auth_url").text
-            },
-            "highlighter": {
-                "input_object_path": highlighter.find("input_object_path").text,
-                "form_uuid": highlighter.find("form_uuid").text,
-                "panels_url": highlighter.find("panels_url").text,
-                "fields_url": highlighter.find("fields_url").text,
-                "submissions_url": highlighter.find("submissions_url").text,
-            }
-        }
-    except Exception:
-        logger.exception("Failed to parse pipeline config XML")
-        return None
-
 def parse_920(xml_payload):
     """
         Method use to parse F768920
@@ -212,21 +124,108 @@ def parse_76800(xml_payload):
         logger.exception("Failed to parse task payload XML")
         return None
 
-def parse_923(xml_payload):
-    """
-        Method use to parse F768923
-    """
-    return {
-        "id": "F768923"
-    }
+# ------------------------------------------------------------------------------
+# Object-storage ETL pipelines (F768930 - F768944)
+#
+# Every one of these takes a flat list of tags -- no nesting, no namespaces -- so they
+# are declared rather than hand-written. Fifteen near-identical try/find/except blocks
+# would be fifteen chances to typo a tag name into a silent None, and the tag list is
+# the interesting part of each parser anyway; here it is the whole of it.
+# ------------------------------------------------------------------------------
+def _tag_text(root, name):
+    """Text of a direct child tag: stripped, or None when the tag is absent or blank.
 
-def parse_922(xml_payload):
+    Stripped because XmlOutTagInfoUtil indents its output, so a value can arrive
+    surrounded by newlines; blank-to-None because a tag the console rendered but the
+    operator left empty means "not set", exactly as an absent one does.
     """
-        Method use to parse F768922
+    element = root.find(name)
+    if element is None:
+        return None
+    value = (element.text or "").strip()
+    return value or None
+
+
+def _flat_parser(pipeline_id, tags):
+    """A parser for a pipeline whose payload is a flat list of tags.
+
+    Absent tags come back as None rather than raising. Deciding which of them a run
+    cannot proceed without belongs to the task -- Pipeline.require names the missing
+    setting in one sentence an operator can act on, where a KeyError in here would
+    surface as a stack trace against a line number in the parser.
     """
-    return {
-        "id": "F768922"
-    }
+    def parse(xml_payload):
+        try:
+            root = ET.fromstring(xml_payload)
+            parsed = {"id": pipeline_id}
+            for tag in tags:
+                parsed[tag] = _tag_text(root, tag)
+            return parsed
+        except Exception:
+            logger.exception("Failed to parse %s task payload XML", pipeline_id)
+            return None
+
+    parse.__name__ = "parse_" + pipeline_id.lower()
+    parse.__doc__ = (
+        f"Method use to parse {pipeline_id}\n"
+        f"        Tags: {', '.join(tags)}"
+    )
+    return parse
+
+
+# <bucket> is optional on all fifteen and absent means "the platform bucket", the
+# convention parse_926 established. It is what routes a tenant's data into that
+# tenant's own bucket, so every pipeline in the family accepts it.
+parse_f768930 = _flat_parser("F768930", (
+    "input_folder", "output_folder", "format", "bucket"))
+parse_f768931 = _flat_parser("F768931", (
+    "input_folder", "output_folder", "required_columns", "numeric_columns",
+    "summary_name", "bucket"))
+parse_f768932 = _flat_parser("F768932", (
+    "input_folder", "output_folder", "key_columns", "keep", "bucket"))
+parse_f768933 = _flat_parser("F768933", (
+    "input_folder", "output_folder", "column", "operator", "value", "bucket"))
+parse_f768934 = _flat_parser("F768934", (
+    "input_folder", "output_folder", "output_name", "add_source_column", "bucket"))
+parse_f768935 = _flat_parser("F768935", (
+    "input_folder", "output_folder", "group_by", "aggregation", "aggregate_column",
+    "bucket"))
+parse_f768936 = _flat_parser("F768936", (
+    "input_folder", "output_folder", "column_mapping", "bucket"))
+parse_f768937 = _flat_parser("F768937", (
+    "input_folder", "output_folder", "bucket"))
+parse_f768938 = _flat_parser("F768938", (
+    "input_key", "output_folder", "rows_per_chunk", "bucket"))
+parse_f768946 = _flat_parser("F768946", (
+    "input_folder", "output_folder", "suffix", "bucket"))
+
+# The imaging analyser. <prompt> and <model> are settings rather than constants because the
+# prompt is most of the quality -- a first draft offering the model an "unreadable" exit got
+# "unreadable" back on a good film -- and because the same pipeline serves CT and MRI once
+# <modality> and <prompt> say so.
+parse_f768947 = _flat_parser("F768947", (
+    "input_folder", "output_folder", "prompt", "model", "modality", "extensions",
+    "max_images", "max_edge", "force_reprocess", "bucket"))
+parse_f768939 = _flat_parser("F768939", (
+    "input_folder", "output_folder", "suffix", "delete_source", "bucket"))
+parse_f768940 = _flat_parser("F768940", (
+    "input_folder", "target_table", "db_host", "db_port", "db_name", "db_user",
+    "db_password", "db_schema", "truncate_before_load", "bucket"))
+parse_f768941 = _flat_parser("F768941", (
+    "query", "output_folder", "output_name", "db_host", "db_port", "db_name",
+    "db_user", "db_password", "bucket"))
+parse_f768942 = _flat_parser("F768942", (
+    "left_object", "right_object", "join_key", "output_folder", "output_name",
+    "join_type", "right_suffix", "bucket"))
+parse_f768943 = _flat_parser("F768943", (
+    "previous_object", "current_object", "output_folder", "key_columns", "prefix",
+    "bucket"))
+parse_f768945 = _flat_parser("F768945", (
+    "input_object", "partition_column", "output_folder", "prefix", "max_partitions",
+    "bucket"))
+parse_f768944 = _flat_parser("F768944", (
+    "input_folder", "archive_folder", "older_than_days", "dry_run", "bucket"))
+
 
 def tpd_test_task_payload_parser(xml_payload):
     """
@@ -250,12 +249,29 @@ def tpd_test_task_payload_parser(xml_payload):
 pipeline_xml_parser = {
     'F768927': parse_927,
     'F768926': parse_926,
-    'F768925': parse_925,
-    'F768924': parse_924,
-    'F768923': parse_923,
-    'F768922': parse_922,
     'F768920': parse_920,
-    'F76800': parse_76800
+    'F76800': parse_76800,
+    # Object-storage ETL family
+    'F768930': parse_f768930,
+    'F768931': parse_f768931,
+    'F768932': parse_f768932,
+    'F768933': parse_f768933,
+    'F768934': parse_f768934,
+    'F768935': parse_f768935,
+    'F768936': parse_f768936,
+    'F768937': parse_f768937,
+    'F768938': parse_f768938,
+    'F768939': parse_f768939,
+    'F768940': parse_f768940,
+    'F768941': parse_f768941,
+    'F768942': parse_f768942,
+    'F768943': parse_f768943,
+    'F768944': parse_f768944,
+    'F768945': parse_f768945,
+    # The for-each. <suffix> is optional -- absent means every object in the folder.
+    'F768946': parse_f768946,
+    # Imaging analysis. Everything past <output_folder> is optional and has a default in the task.
+    'F768947': parse_f768947
 }
 
 if __name__ == '__main__':
