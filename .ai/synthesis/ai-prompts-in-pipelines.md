@@ -81,9 +81,27 @@ worker also now echoes the per-run `callbackToken` on every status/log callback.
   variable, but a step maps it to a field's text today).
 - Per-workspace monthly caps and an "AI tokens" measure on Reports (phase 3).
 
+## 5b. What the load and matrix runs established (2026-09-18)
+
+- 50 pipelines × 3 batches and a 100-pipeline matrix across ten use cases (plain; server
+  JSON; server text + continue; worker text; worker file; server→server chain; server→worker
+  chain; nested tags + select; empty required variable; 5-token JSON prompt), 70 manual + 30
+  scheduled: every run ended as its case predicts; the scheduler's skip-next and deactivate
+  behave; chained steps hand the first step's JSON to the second.
+- Budget exhaustion mid-batch: fail steps fail the run before any call, continue steps complete
+  with the tag empty; overshoot is a few in-flight calls (the check is before each call).
+- Server-side steps run one after another inside the dispatch tick (~0.65 s each here); with a
+  connection cap of 2 the gain from parallel dispatch is ≤2×, so left alone.
+- A worker restart replays uncommitted (failed) records; the console refuses them (`RUN_OVER`)
+  and the worker now skips them rather than re-running (branch `ai-prompt-steps`).
+- A topic no worker reads strands a run at Start; the topic test now says so.
+
 ## 6. Tests
 
 Backend: `AiEndpointPolicyTest` 8, `AiProviderGatewayTest` 4, `PromptRunnerTest` 5,
 `AiAgentAliasTest` 3, `AiStepServiceTest` 5, `PipelineAiStepTest` 4, `TopicsForProfileTest` 8.
-Frontend: `prompt-edit.spec.ts` 4. E2E: `ai-prompts.spec.ts` (connection → prompt tried → AI
-step → task → run carries the answer, 56 s against the local Ollama).
+Frontend: `prompt-edit.spec.ts` 4, `kafka-connections.spec.ts` (unread topic warning). E2E:
+`ai-prompts.spec.ts` (connection → prompt tried → AI step → task → run carries the answer,
+56 s against the local Ollama). Worker: `tests/test_ai_steps.py` 7 (fake console: tag and
+file variables, budget refusal, 401, token fallback, refused run). Load scripts in the session
+scratchpad: `ai-load-50.py`, `ai-matrix-100.py`, `ai-matrix-check.py`, `sched-watch.py`.

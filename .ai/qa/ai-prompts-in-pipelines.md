@@ -1,0 +1,56 @@
+# QA — AI prompts in pipelines
+
+Companion to `.ai/grooming/ai-prompts-in-pipelines.md` and `.ai/synthesis/ai-prompts-in-pipelines.md`.
+Exercised live on 2026-09-18 against `http://localhost:4400` / `http://localhost:9098` with the
+workers from `job-search` branch `ai-prompt-steps` (containers `tpd_test_listener`,
+`tpd_scrapping_listener`), the local Ollama (`gemma3:1b`) and MinIO. Signed in as
+`emily.rodriguez@medaxiscare.demo` (TENANT_ADMIN, MedAxis) and, for isolation, as
+`michael.thompson@everwellmedical.demo` (EverWell). Every run below made a real model call.
+
+**Fixtures created and left in place** (per `feedback_leave_test_data_in_place.md`): connection
+"Ollama · local box" (default, cap 2 in flight, 50,000 tokens/day); prompts "Summarise claim" (JSON,
+v2), "One-line verdict", "Tiny JSON (5 tokens)", "Chain verdict"; topic "AI worker test 753866"
+(11763, `test-topic`); pipelines `AIUI001`, `AIW753866`, `L…00–49`, `M…001–100` with a task and a job
+each (the 27 scheduled jobs deactivated at the end of the pass); MinIO object
+`etl-bucket/claims/in/CLM-2026-00418.txt`.
+
+## Acceptance checklist
+
+| # | Criterion | Result |
+|---|---|---|
+| 1 | Connection: add, test lists the provider's models, default set, key never returned | pass (5 models listed; `apiKeyConfigured` only) |
+| 2 | Another workspace cannot see, default or delete a connection | pass (Michael: empty list, "Connection not found") |
+| 3 | Default cannot be deleted while a prompt relies on it | pass |
+| 4 | Prompt: template placeholder without a variable refused (server and editor) | pass |
+| 5 | Try it runs the page as it is; answer, tokens, time shown; recorded as a try | pass (0.5 s, 101→23) |
+| 6 | Save is a version; Save & activate makes it live; versions listed | pass (v1, v2) |
+| 7 | Another workspace cannot read a prompt; file chat lists only its own | pass |
+| 8 | Pipeline: AI step refused without a prompt, with a required variable unmapped, reading a field below it, `file:` on a server step, a server step reading a worker step's tag | pass (each message named the step and the variable) |
+| 9 | Prompt in use by a pipeline cannot be deactivated or deleted; "Used by" counts it | pass |
+| 10 | Task shows the step as a read-only card, no input, no tag from the browser | pass |
+| 11 | Dispatch runs server steps and the Kafka message carries the answer tag | pass (`<summary>{…}</summary>` seen in the sent payload) |
+| 12 | Worker steps: `<ai_step>` handed over, worker resolves tag and file variables, console runs it under the run token, tag written, audit line | pass (139→24 tokens, 2.3 s, file text in the rendered input) |
+| 13 | Chained steps, server→server and server→worker | pass (step 2's input carries step 1's JSON) |
+| 14 | Empty required variable fails before any call | pass |
+| 15 | JSON never validating: one repair round, then failed; `continue` completes the run with the tag empty | pass (5-token prompt) |
+| 16 | Daily budget: refusal before the call; fail vs continue per step | pass (overshoot = in-flight calls only) |
+| 17 | Idempotent per (run, tag); a replayed Kafka message after a worker restart is skipped | pass after fix (`job-search` `3d60fd1a`) |
+| 18 | Run logs show an "AI steps" card; job history and prompt runs agree | pass |
+| 19 | Access profile: `ai-prompts` grants Prompts; member without it sees no Assistants | pass (`access-profiles.spec.ts`) |
+| 20 | Scheduler: scheduled jobs with AI steps fire, skip-next skips, deactivate stops | pass (30 jobs, two slots) |
+
+## Findings
+
+| Id | Severity | Finding | Status |
+|---|---|---|---|
+| AI-1 | high | The worker re-ran a replayed message end to end (model call, bucket write, three refused callbacks) after a restart | fixed, `job-search` `3d60fd1a` |
+| AI-2 | high | The Python worker sent only the shared secret; with per-run tokens every status callback was a 401 and runs stayed at Start | fixed, `job-search` `c40d08d7` |
+| AI-3 | medium | A topic test said "reachable" for a topic no worker reads; a run dispatched to one strands at Start for 6 h (runs 5715, 5716) | fixed, `process` `0f27b52`, `scheduler1` `df48860` |
+| AI-4 | medium | The test listener container had no MinIO credentials, so a worker step reading a file failed | fixed, compose |
+| AI-5 | low | AI budget day counted from UTC midnight while run rows are in the server's clock (rolled 5 h early) | fixed, `process` `0f27b52` |
+| AI-6 | low | Worker-run steps left no audit line | fixed, `job-search` `1d5914df` |
+| AI-7 | low | The AI step drawer's "reads field" select lost its saved value on reopen | fixed, `scheduler1` `0ffcf12` |
+| AI-8 | low | Expected refusals logged a full stack on the server | fixed, `process` `0f27b52` |
+| AI-9 | observation | One notification per run: 296 in a day of testing; the bell reads 99+ | open — a digest is the obvious change |
+| AI-10 | observation | Server-side steps run one after another inside the dispatch tick (~0.65 s each); ≤2× to gain with a cap of 2 | open, by design for now |
+| AI-11 | observation | The worker's MinIO (`:9000`) and the console's buckets (LocalStack `:4566`) are different stores in this dev setup; a file variable reads the worker's | open — environment |
