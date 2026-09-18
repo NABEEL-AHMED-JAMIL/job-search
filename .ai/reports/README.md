@@ -31,3 +31,4 @@ Date-stamp only where the date is the point — a baseline, or a run being compa
 ## Status
 
 Empty. The first entries will arrive with the first Execution and QA passes.
+- [api-load-review-2026-09-18.md](api-load-review-2026-09-18.md) — every read endpoint timed at the 10k-row seed; the two that mattered, what changed, what needs a decision.
