@@ -1,9 +1,13 @@
-# NOTE: values below are hardcoded rather than ${VAR:-default} interpolation on purpose --
+# NOTE: the addresses below are hardcoded rather than ${VAR:-default} interpolation on purpose --
 # Docker Compose auto-loads the .env file that already sits in this same directory (written
 # for the host-venv workflow, e.g. KAFKA_SERVERS=localhost:9093) to resolve ${VAR} references,
 # and that host-facing value would silently win over any inline default here, since ":-default"
 # only applies when the variable is completely unset. Inside a container "localhost" means the
 # container itself, not the host, so these need host.docker.internal unconditionally.
+#
+# Credentials are the opposite case and are never written here. They are ${VAR:?} with no
+# default, so the stack refuses to start rather than coming up on a value committed to the
+# repository; .env.example lists the names that have to be set.
 services:
 
   audio-extract-service:
@@ -20,10 +24,9 @@ services:
       # Shared secret for /changeState and /addLogs. Must match process's value, or the
       # backend rejects these callbacks and job status silently stops updating.
       WORKER_CALLBACK_TOKEN: ${WORKER_CALLBACK_TOKEN:-}
-      OLLAMA_URL: http://host.docker.internal:11434
       MINIO_ENDPOINT: host.docker.internal:9000
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin123
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?set MINIO_ACCESS_KEY in .env}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?set MINIO_SECRET_KEY in .env}
       MINIO_BUCKET_NAME: etl-bucket
       MINIO_SECURE: "false"
     command: ["uvicorn", "etl.service.audio_extract_service:app", "--host", "0.0.0.0", "--port", "8100", "--workers", "1"]
@@ -54,15 +57,25 @@ services:
       # Shared secret for /changeState and /addLogs. Must match process's value, or the
       # backend rejects these callbacks and job status silently stops updating.
       WORKER_CALLBACK_TOKEN: ${WORKER_CALLBACK_TOKEN:-}
-      OLLAMA_URL: http://host.docker.internal:11434
       MINIO_ENDPOINT: host.docker.internal:9000
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin123
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?set MINIO_ACCESS_KEY in .env}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?set MINIO_SECRET_KEY in .env}
       MINIO_BUCKET_NAME: etl-bucket
       MINIO_SECURE: "false"
       KAFKA_SERVERS: kafka:9092
       KAFKA_SCRAPPING_TOPIC: scrapping-topic
       SCRAPPING_GROUP_ID: scrapping-group
+      # Broker security. This stack's Kafka is PLAINTEXT; a deployment pointing the workers
+      # at a SASL or TLS cluster sets these in .env, and the consumer refuses to start rather
+      # than falling back to an anonymous connection when the credentials are missing. The
+      # ssl_* paths must name files that exist inside the container, so they need a mount too.
+      KAFKA_SECURITY_PROTOCOL: ${KAFKA_SECURITY_PROTOCOL:-PLAINTEXT}
+      KAFKA_SASL_MECHANISM: ${KAFKA_SASL_MECHANISM:-}
+      KAFKA_SASL_USERNAME: ${KAFKA_SASL_USERNAME:-}
+      KAFKA_SASL_PASSWORD: ${KAFKA_SASL_PASSWORD:-}
+      KAFKA_SSL_CAFILE: ${KAFKA_SSL_CAFILE:-}
+      KAFKA_SSL_CERTFILE: ${KAFKA_SSL_CERTFILE:-}
+      KAFKA_SSL_KEYFILE: ${KAFKA_SSL_KEYFILE:-}
       JOBSEARCH_USER_AGENT: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
       # v4_backend -- a separate local Postgres (Homebrew postgresql@18 on the host,
       # port 5432) that the F768920 pipeline imports Firebase users into. Reached via
@@ -73,7 +86,7 @@ services:
       V4_BACKEND_PORT: "5432"
       V4_BACKEND_DB: v4_backend
       V4_BACKEND_USER: nabeel.amd93
-      V4_BACKEND_PASSWORD: admin
+      V4_BACKEND_PASSWORD: ${V4_BACKEND_PASSWORD:?set V4_BACKEND_PASSWORD in .env}
     command: ["python", "-m", "etl.tpd.tpd_scrapping_listener"]
 
   # The test-loop consumer. Its pipeline is simulated work -- a counted loop with a short
@@ -96,6 +109,24 @@ services:
       KAFKA_SERVERS: kafka:9092
       KAFKA_TEST_TOPIC: test-topic
       TEST_GROUP_ID: test-group
+      # An AI step handed to this worker may read the object a field names (etl/util/ai_steps),
+      # so the test listener reaches the object store the same way the pipeline listener does.
+      MINIO_ENDPOINT: host.docker.internal:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?set MINIO_ACCESS_KEY in .env}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?set MINIO_SECRET_KEY in .env}
+      MINIO_BUCKET_NAME: etl-bucket
+      MINIO_SECURE: "false"
+      # Broker security. This stack's Kafka is PLAINTEXT; a deployment pointing the workers
+      # at a SASL or TLS cluster sets these in .env, and the consumer refuses to start rather
+      # than falling back to an anonymous connection when the credentials are missing. The
+      # ssl_* paths must name files that exist inside the container, so they need a mount too.
+      KAFKA_SECURITY_PROTOCOL: ${KAFKA_SECURITY_PROTOCOL:-PLAINTEXT}
+      KAFKA_SASL_MECHANISM: ${KAFKA_SASL_MECHANISM:-}
+      KAFKA_SASL_USERNAME: ${KAFKA_SASL_USERNAME:-}
+      KAFKA_SASL_PASSWORD: ${KAFKA_SASL_PASSWORD:-}
+      KAFKA_SSL_CAFILE: ${KAFKA_SSL_CAFILE:-}
+      KAFKA_SSL_CERTFILE: ${KAFKA_SSL_CERTFILE:-}
+      KAFKA_SSL_KEYFILE: ${KAFKA_SSL_KEYFILE:-}
     command: ["python", "-m", "etl.tpd.tpd_test_listener"]
 
 networks:

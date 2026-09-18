@@ -42,15 +42,37 @@ class JobStateClient:
         self._log_buffers = defaultdict(list)
         self._log_first_seen = {}
         self._log_lock = threading.Lock()
+        # The per-run callback token each dispatch carries, keyed by (job_id, job_queue_id).
+        self._run_tokens = {}
+        self._token_lock = threading.Lock()
 
-    @staticmethod
-    def _auth_headers():
-        """Shared secret the backend requires on /changeState and /addLogs (see NotifyResetApi).
-        These callbacks sit outside the JWT chain because workers have no user session, so this
-        header is what distinguishes a real worker from anyone else who can reach the port.
-        Absent, the header is simply omitted -- a backend with no token configured still accepts
-        the call, which keeps an un-migrated deployment working."""
-        token = os.getenv("WORKER_CALLBACK_TOKEN", "").strip()
+    def remember_run_token(self, job_id, job_queue_id, token):
+        """The token the dispatch carried (payload.callbackToken): the run's own proof, echoed
+        on every callback for that run and forgotten once it is over."""
+        if not token:
+            return
+        with self._token_lock:
+            self._run_tokens[(job_id, job_queue_id)] = token
+
+    def forget_run_token(self, job_id, job_queue_id):
+        with self._token_lock:
+            self._run_tokens.pop((job_id, job_queue_id), None)
+
+    def run_token(self, job_id, job_queue_id):
+        with self._token_lock:
+            return self._run_tokens.get((job_id, job_queue_id))
+
+    def _auth_headers(self, job_id=None, job_queue_id=None):
+        """What proves a callback (see NotifyResetApi and RunCallbackTokens on the server).
+
+        Since 2026-09-18 every dispatch carries a token good for that run alone, and the server
+        checks it against a hash on the queue row: a callback that echoes it can only touch the
+        run it was handed. The shared WORKER_CALLBACK_TOKEN is honoured only for a run dispatched
+        before tokens existed, so it is the fallback here, not the rule. Absent both, the header
+        is simply omitted."""
+        token = self.run_token(job_id, job_queue_id) if job_id is not None else None
+        if not token:
+            token = os.getenv("WORKER_CALLBACK_TOKEN", "").strip()
         return {"X-Worker-Token": token} if token else {}
 
     def change_job_state(self, job_id, job_queue_id, job_status, message):
@@ -63,7 +85,7 @@ class JobStateClient:
             "jobStatusMessage": message
         }
         try:
-            response = requests.post(url, json=payload, headers=self._auth_headers(),
+            response = requests.post(url, json=payload, headers=self._auth_headers(job_id, job_queue_id),
                                      timeout=CALLBACK_TIMEOUT)
             if response.status_code == 200:
                 try:
@@ -135,7 +157,7 @@ class JobStateClient:
         url = f"{self.base_url}/addLogsBatch/jobId/{job_id}/jobQueueId/{job_queue_id}"
         try:
             response = requests.post(url, json={"messages": messages},
-                                     headers=self._auth_headers(), timeout=CALLBACK_TIMEOUT)
+                                     headers=self._auth_headers(job_id, job_queue_id), timeout=CALLBACK_TIMEOUT)
             if response.status_code == 200:
                 logger.info("SUCCESS: %s line(s) for job %s queue %s",
                             len(messages), job_id, job_queue_id)
@@ -145,29 +167,3 @@ class JobStateClient:
         except Exception as ex:
             logger.error("FAILED: %s line(s) for job %s queue %s: %s",
                          len(messages), job_id, job_queue_id, str(ex))
-
-    def job_audit_log_single(self, job_id, job_queue_id, message):
-        """The original per-line call, kept for anything that needs a line sent immediately."""
-        url = f"{self.base_url}/addLogs/jobId/{job_id}/jobQueueId/{job_queue_id}"
-        payload = {
-            "jobStatusMessage": message
-        }
-        try:
-            response = requests.post(url, json=payload, headers=self._auth_headers(),
-                                     timeout=CALLBACK_TIMEOUT)
-            if response.status_code == 200:
-                try:
-                    logger.info("SUCCESS: %s", response.json())
-                    return response.json()
-                except Exception:
-                    logger.info("SUCCESS: %s", response.text)
-                    return response.text
-            else:
-                logger.error("FAILED: status=%s response=%s", response.status_code, response.text)
-                try:
-                    return response.json()
-                except Exception:
-                    return response.text
-        except Exception as e:
-            logger.error("ERROR calling API: %s", str(e), exc_info=True)
-            return None

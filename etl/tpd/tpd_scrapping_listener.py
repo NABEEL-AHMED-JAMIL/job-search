@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from etl.tpd.tpd_kafka_config import create_consumer
 from etl.tpd.offset_tracker import OffsetTracker
 from etl.util.xml_parser import pipeline_xml_parser
+from etl.util.ai_steps import resolve_ai_steps
 from etl.util.etl_helpers import job_state
 from etl.util.job_status import JobStatus
 from etl.util.logging_config import get_logger
@@ -175,7 +176,14 @@ def execute_task(message, payload, job_state_client):
         if not pipeline_id:
             raise ValueError("pipelineId missing")
 
+        # The run's own proof for every callback below (see JobStateClient._auth_headers).
+        job_state_client.remember_run_token(job_id, job_queue_id, payload.get("callbackToken"))
         update_job_status(job_state_client, job_id, job_queue_id, JobStatus.RUNNING,"Job started")
+        # AI steps the pipeline hands to this worker run first, and land in the document as
+        # ordinary tags, so the parser and the task below know nothing about them.
+        payload = dict(payload)
+        payload["taskPayload"] = resolve_ai_steps(payload.get("taskPayload"), job_id, job_queue_id,
+                                                  payload.get("callbackToken"))
         task_payload = extract_task_payload(pipeline_id, payload)
         task_payload["job_id"] = job_id
         task_payload["job_queue_id"] = job_queue_id
@@ -199,6 +207,9 @@ def execute_task(message, payload, job_state_client):
         job_state_client.flush_logs(job_id, job_queue_id)
         update_job_status(job_state_client, job_id, job_queue_id, JobStatus.FAILED, str(ex))
         raise
+    finally:
+        # The run is over either way; its token is spent on the server too.
+        job_state_client.forget_run_token(job_id, job_queue_id)
 
 # ------------------------------------------------------------------------------
 # Payload Parser
