@@ -56,3 +56,32 @@ each (the 27 scheduled jobs deactivated at the end of the pass); MinIO object
 | AI-9 | observation | One notification per run: 296 in a day of testing; the bell reads 99+ | open — a digest is the obvious change |
 | AI-10 | observation | Server-side steps run one after another inside the dispatch tick (~0.65 s each); ≤2× to gain with a cap of 2 | open, by design for now |
 | AI-11 | observation | The worker's MinIO (`:9000`) and the console's buckets (LocalStack `:4566`) are different stores in this dev setup; a file variable reads the worker's | open — environment |
+
+### AI-13 · major, fixed 2026-09-18 · The file chat could not read a `.log` -- the one file type "Log triage" was written for
+
+**Observed.** Chatting with the worker's `docs/logs/worker.log` (216 bytes of plain text) from the
+bucket: "Couldn't get any readable content out of this .log file." `.txt`, `.md`, `.csv`, `.json`
+beside it all read fine. **Cause.** `NATIVE_TEXT_EXTENSIONS` stopped at md/txt/csv/json/xml; every
+other extension went to the document converter, which has no "log" family and answers null -- the
+same null that means "no reader for this type". **Fixed.** `process` `c6698ad`: log, tsv, yaml/yml,
+jsonl/ndjson, properties, ini, sql, toml, env read as themselves; pinned by
+`FileChatExtractionServiceImplTest.plainTextFormatsWithoutAConverterFamilyAreReadAsThemselves`.
+
+### AI-14 · minor, fixed 2026-09-18 · An empty file was reported as an unsupported format
+
+**Observed.** The whisper step's transcript of a test tone -- a legitimate zero-byte `.txt` -- and
+the tone `.mp3` itself both answered "Couldn't get any readable content out of this … file", which
+sends the reader looking for a format problem. **Cause.** Two `ProcessUtil.isNull` calls used as
+null checks (`truncate()` in the extractor, the supplier in `FileChatServiceImpl`); that helper is
+also true for `""`, so an empty read collapsed into the extractor's "unsupported" null.
+**Fixed.** Same commit: both are `== null`; an empty file now says "tone.txt is empty -- there is
+nothing in it to ask about". Two tests pin it (extractor returns `""`; service names the file).
+
+### Checklist addendum -- the chat bot on bucket files (2026-09-18)
+
+Through a new storage connection to the workers' MinIO (`worker-store`), every output the twenty
+pipelines wrote was opened in the file chat, from the panel and through `fileChat.json` directly:
+CSV, JSON, `.txt`, `.md`, `.txt.gz`, `.log` (after AI-13), spoken `.m4a` (synthesised with `say`,
+uploaded through the console, transcribed by `audio_extract_service`), the empty transcript (after
+AI-14). The prompt tags drive the agent picker as intended: a `.csv` opens on "CSV analyst", a
+`.log` on "Log triage", and the wrong pairing is refused by name in both directions.
