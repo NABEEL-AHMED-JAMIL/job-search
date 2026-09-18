@@ -53,6 +53,7 @@ Taken from the dependency graph in [../discovery/features.md](../discovery/featu
 | `source-tasks` | `source-jobs`, `bulk-transfer` |
 | `source-jobs` | `job-runs-and-queue`, `job-assistant`, `reports`, `dashboard`, `bulk-transfer` |
 | Shared UI in `shared/ui` or `shared/charts` | Every screen using it — grep before assuming |
+| `shared/ui/combobox.ts` | **Every long list in the console** (since 2026-09-18): task editor topic and pipeline, job editor task, Source Tasks and Reports filters, Users/Access-profiles tenant pickers, Objects/Converter/Transcript bucket and file pickers, the pipeline and topic dialogs. Check one numeric control (a topic id must come back as a number) and one signal-bound filter (`selected`/`selectedChange`) |
 | `shared/charts/day-series.ts` | `reports` **and** `job-runs-and-queue`. Both draw a runs-per-day axis from it, so the empty-day gap fill and the `MAX_DAYS` cap are shared behaviour, not one screen's |
 | `shared/charts/bar-chart.ts` | Every bar chart, at a **narrow** container and at a container that starts hidden. Label thinning is decided from the measured pixel width, not the bar count |
 | `core/api/list-limit.ts` | The Tasks list and the job editor's task dropdown. Both send `LIST_LIMIT` because `PagingUtil` defaults an absent limit to ten; a change here silently shortens both lists |
