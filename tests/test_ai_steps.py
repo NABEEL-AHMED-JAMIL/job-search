@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from etl.util.ai_steps import AiStepError, resolve_ai_steps
-from etl.util.job_state_client import JobStateClient
+from etl.util.job_state_client import JobStateClient, RunRefused
 
 DOCUMENT = (
     '<pipeline>\n'
@@ -139,6 +139,33 @@ class RunTokenTest(unittest.TestCase):
             self.assertEqual(client._auth_headers(2425, 5715), {"X-Worker-Token": "shared-secret"})
         finally:
             del os.environ["WORKER_CALLBACK_TOKEN"]
+
+
+class RefusedRunTest(unittest.TestCase):
+    """A 401 on a status callback is the console saying the run is over: raised, not swallowed."""
+
+    class Console(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            self.rfile.read(length)
+            body = b'{"status":"ERROR","message":"Unauthorized worker callback."}'
+            self.send_response(401)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    def test_a_refused_status_update_raises_run_refused(self):
+        server = HTTPServer(("127.0.0.1", 0), self.Console)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            client = JobStateClient("http://127.0.0.1:%d" % server.server_address[1])
+            with self.assertRaises(RunRefused):
+                client.change_job_state(2470, 5811, "Running", "Job started")
+        finally:
+            server.shutdown()
 
 
 if __name__ == "__main__":

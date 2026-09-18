@@ -11,7 +11,7 @@ from etl.tpd.tpd_kafka_config import create_consumer
 from etl.tpd.offset_tracker import OffsetTracker
 from etl.util.xml_parser import tpd_test_task_payload_parser
 from etl.util.ai_steps import resolve_ai_steps
-from etl.util.job_state_client import JobStateClient
+from etl.util.job_state_client import JobStateClient, RunRefused
 from etl.util.job_status import JobStatus
 from etl.util.logging_config import get_logger
 
@@ -149,7 +149,13 @@ def execute_task(payload: dict):
         logger.info("Starting Job. jobId=%s jobQueueId=%s",job_id, job_queue_id)
         # The run's own proof for every callback (see JobStateClient._auth_headers).
         job_state_client.remember_run_token(job_id, job_queue_id, payload.get("callbackToken"))
-        update_job_status(job_id, job_queue_id, JobStatus.RUNNING,f"Job {job_id} is running.")
+        try:
+            update_job_status(job_id, job_queue_id, JobStatus.RUNNING,f"Job {job_id} is running.")
+        except RunRefused:
+            # A replayed message for a run the console already closed (see the same branch in
+            # tpd_scrapping_listener): skipped, and its offset claimed like a finished record.
+            logger.warning("Skipping job %s run %s: the console refused the run -- a replayed message for a finished run", job_id, job_queue_id)
+            return
         # AI steps handed to this worker run first and land in the document as ordinary tags.
         payload = dict(payload)
         payload["taskPayload"] = resolve_ai_steps(payload.get("taskPayload"), job_id, job_queue_id,
@@ -167,7 +173,10 @@ def execute_task(payload: dict):
         logger.exception("Job failed. jobId=%s", job_id)
         # Flush on the failure path too -- the buffered lines are usually what explains it.
         job_state_client.flush_logs(job_id, job_queue_id)
-        update_job_status(job_id, job_queue_id, JobStatus.FAILED, f"Job {job_id} failed due to {str(ex)}")
+        try:
+            update_job_status(job_id, job_queue_id, JobStatus.FAILED, f"Job {job_id} failed due to {str(ex)}")
+        except RunRefused:
+            logger.warning("The console would not take the failure for job %s run %s; the run is already over there", job_id, job_queue_id)
         raise
     finally:
         job_state_client.forget_run_token(job_id, job_queue_id)

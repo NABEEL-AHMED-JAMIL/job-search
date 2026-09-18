@@ -34,6 +34,12 @@ from etl.util.logging_config import get_logger
 logger = get_logger(__name__)
 
 
+class RunRefused(Exception):
+    """The console refused this run's callback (401): the run is over, or the token is not
+    the run's own. Whatever this worker is doing for the run is wasted -- a replayed Kafka
+    message for a run that already finished, most often -- and nothing it reports will land."""
+
+
 class JobStateClient:
 
     def __init__(self, base_url):
@@ -94,12 +100,19 @@ class JobStateClient:
                 except Exception:
                     logger.info("SUCCESS: %s", response.text)
                     return response.text
+            elif response.status_code == 401:
+                # Not retried and not swallowed: the caller decides whether to keep working.
+                logger.warning("REFUSED: the console will not take callbacks for job %s run %s (%s)",
+                               job_id, job_queue_id, response.text[:120])
+                raise RunRefused(response.text)
             else:
                 logger.error("FAILED: status=%s response=%s", response.status_code, response.text)
                 try:
                     return response.json()
                 except Exception:
                     return response.text
+        except RunRefused:
+            raise
         except Exception as e:
             logger.error(f"ERROR calling API: {e}")
             return None

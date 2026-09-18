@@ -16,6 +16,7 @@ from etl.tpd.offset_tracker import OffsetTracker
 from etl.util.xml_parser import pipeline_xml_parser
 from etl.util.ai_steps import resolve_ai_steps
 from etl.util.etl_helpers import job_state
+from etl.util.job_state_client import RunRefused
 from etl.util.job_status import JobStatus
 from etl.util.logging_config import get_logger
 
@@ -178,7 +179,16 @@ def execute_task(message, payload, job_state_client):
 
         # The run's own proof for every callback below (see JobStateClient._auth_headers).
         job_state_client.remember_run_token(job_id, job_queue_id, payload.get("callbackToken"))
-        update_job_status(job_state_client, job_id, job_queue_id, JobStatus.RUNNING,"Job started")
+        try:
+            update_job_status(job_state_client, job_id, job_queue_id, JobStatus.RUNNING,"Job started")
+        except RunRefused:
+            # The console says this run is over (or the token is not its own). That is a message
+            # Kafka delivered again -- after a restart, the offset of a failed record is not
+            # committed -- for work already finished and reported. Doing it again would spend a
+            # model call and a bucket write for nothing and report nothing, so it is skipped and
+            # its offset claimed like any finished record.
+            logger.warning("Skipping job %s run %s: the console refused the run -- a replayed message for a finished run", job_id, job_queue_id)
+            return
         # AI steps the pipeline hands to this worker run first, and land in the document as
         # ordinary tags, so the parser and the task below know nothing about them.
         payload = dict(payload)
@@ -206,7 +216,10 @@ def execute_task(message, payload, job_state_client):
         logger.exception("Job failed job_id=%s",job_id)
         # Flush on failure too: the buffered lines are usually what explains it.
         job_state_client.flush_logs(job_id, job_queue_id)
-        update_job_status(job_state_client, job_id, job_queue_id, JobStatus.FAILED, str(ex))
+        try:
+            update_job_status(job_state_client, job_id, job_queue_id, JobStatus.FAILED, str(ex))
+        except RunRefused:
+            logger.warning("The console would not take the failure for job %s run %s; the run is already over there", job_id, job_queue_id)
         raise
     finally:
         # The run is over either way; its token is spent on the server too.
