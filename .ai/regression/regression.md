@@ -12,6 +12,7 @@ These are the cheap part and they catch most of it. All four green before any ma
 |---|---|---|
 | Backend unit | `mvn -o test` (from `process/`) | 607 passing |
 | Backend E2E | `./run-e2e.sh` | 86 passing |
+| Console E2E (tenant flows) | `E2E_TENANT_ADMIN=… E2E_TENANT_ADMIN_PASSWORD=… E2E_TENANT_USER=… E2E_TENANT_USER_PASSWORD=… npx playwright test e2e/access-profiles.spec.ts e2e/topics-pipelines.spec.ts` (from `scheduler1/next/`; admin and user in the same workspace) | 2 passing — added 2026-09-18, both green against the live stack |
 | Frontend | `npx ng test --watch=false` (from `scheduler1/next/`) | 580 passing |
 | Kafka security matrix | `./run-kafka-matrix.sh` | 17 passing, real broker |
 
