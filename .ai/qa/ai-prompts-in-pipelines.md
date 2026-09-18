@@ -85,3 +85,11 @@ CSV, JSON, `.txt`, `.md`, `.txt.gz`, `.log` (after AI-13), spoken `.m4a` (synthe
 uploaded through the console, transcribed by `audio_extract_service`), the empty transcript (after
 AI-14). The prompt tags drive the agent picker as intended: a `.csv` opens on "CSV analyst", a
 `.log` on "Log triage", and the wrong pairing is refused by name in both directions.
+
+### Checklist addendum -- prompts on S3 files of every type (2026-09-18)
+
+Twenty-six objects in Emily's S3 bucket, one generic prompt, every reader the file chat has:
+25 answered, one (parquet) refused by name. Two things changed to make that true: any variable
+can now be filled from any object (the object picker + `aiPrompt.json/objectText`), and a file
+with no reader by name is read as text when its bytes are text. What is *not* solved: an image
+whose content is text -- llava describes it and gets the numbers wrong; OCR is the missing reader.
