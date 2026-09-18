@@ -63,11 +63,19 @@ Page grants `ai-agents` → `ai-prompts` (V44). `ai_agent` stays in place, unrea
 - Access profiles: key `ai-prompts` "Prompts" under Assistants; `/ai/agents`, `/ai/models`
   redirect. Docs page section "Let a model do part of the work"; landing names it.
 
+## 4b. Worker-side steps (job-search, branch `ai-prompt-steps`)
+
+A step with `run_in = worker` is written into the document as `<ai_step>` at dispatch; the
+worker (`etl/util/ai_steps.py`, before either listener's parser) resolves each variable -- the
+tag's text, or the contents of the object the tag names (`file:<tag>` in the map; the one thing
+the server cannot do) -- calls `POST /aiPrompt.json/run` with the run's own callback token, and
+writes the answer as the tag. The console holds the key, runs the prompt, records the run. The
+worker also now echoes the per-run `callbackToken` on every status/log callback.
+
 ## 5. What is deliberately not there
 
-- Worker-side steps (`<ai_step>` in the payload for a step that must run after the worker has
-  produced something). The server-side step covers inputs the task carries; the worker-side
-  contract (`aiPrompt.json/run` behind the per-run token) waits for the worker's owner.
+- A worker step that reads something the *task* produced (the step runs before the task, so it
+  reads the document and the object store, not the task's result).
 - A full JSON-schema validator: the check is `required` / `properties` keys.
 - A file variable read from a storage connection by the server (a `file` type exists on a
   variable, but a step maps it to a field's text today).
