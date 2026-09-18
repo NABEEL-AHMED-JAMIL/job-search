@@ -57,6 +57,34 @@ Migration: `ai_agent` → one connection per distinct (provider, endpoint, key) 
 agent (`instructions` as system, template `{{text}}`, file types as a tag). `aiAgent.json/*`
 kept as aliases until file chat and the job assistant pick a prompt.
 
+## Cases walked through (2026-09-18, second pass) -- four change the design
+
+1. **The worker may not know `<ai_step>`** (Python consumer, outside these repos). So two
+   execution points: **before dispatch** (default -- the server runs steps whose inputs are task
+   fields or files in a storage connection and writes the output tags into the payload; the
+   worker needs no change) and **in the worker** (opt-in per step, only for topics whose
+   profile says the worker runs AI steps). Phase 2 ships the first.
+2. **Tampered payload.** The browser never writes `<ai_step>`; the server appends the pipeline's
+   steps at dispatch from the definition. The run token is scoped to the prompts in that
+   dispatch.
+3. **Worker retry after the model answered.** `aiPrompt.json/run` is idempotent on
+   `(jobQueueId, stepTag)` -- a second call returns the stored run, no provider call.
+4. **A scheduled job with 1,000 files.** Per-connection concurrency cap (default 4, queued),
+   retry with backoff on 429/5xx (3 attempts, recorded), and a per-workspace daily token budget
+   that fails the step before the call once spent -- budget in phase 1, not phase 3.
+
+Also settled: input past the window → file variable mode (whole | head N | relevant sections,
+reusing the file chat's chunker), rendered input stored on the run; no JSON mode on a provider
+→ strip fences, validate, one repair round, then `on_error`; chained steps run in field order
+and may read an earlier step's tag (forward/circular refs refused at save); an empty required
+variable fails before any call; the version pinned at dispatch runs; a connection or prompt in
+use refuses delete/deactivation and lists the pipelines.
+
+Console side: the AI step's config opens in the side drawer (the pipeline dialog is full); on
+a task it renders as a read-only card, not an input; Try it picks a file sample from the Object
+Browser; TENANT_ADMIN writes, TENANT_USER reads; the job history run card shows prompt,
+version, tokens, latency, attempts, output preview, rendered input one click away.
+
 ## Phases
 
 1. V44 tables + migration; Connections screen; Prompts list + editor with Try it; aliases.
