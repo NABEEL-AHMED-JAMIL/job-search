@@ -148,6 +148,18 @@ rows -- a comment that was factually stale.
 
 ---
 
+
+**Addendum 2026-09-18 -- the page at volume.** Nothing in the table above asks what the screen does
+with a hundred tasks, because no row of it was written against more than 49 runs. The load and
+matrix rounds under `ai-prompts-in-pipelines` supplied 361 runs over 173 tasks and the answer was:
+three unpaged walls and a chart of hairlines. See `qa/reports.md` QA-14 for what was done -- chips,
+search and paging on every list, failures grouped by reason before they are listed, a Model calls
+section over `aiPrompt.json/usage`, and a builder whose grid is ordered and paged while its chart
+draws only the top twelve rows. Gap 18 above ("(N of N) on every load") is closed as a side effect:
+the shell's count now reads "25 of 173" and means it. The one design rule worth carrying forward:
+**a list that can grow with the run history gets a search and a page break on the day it is
+built**, not on the day it is found full.
+
 ## 3. Solution detail
 
 ### 3.1 Gap 1 -- make `submit` a tenant-admin action

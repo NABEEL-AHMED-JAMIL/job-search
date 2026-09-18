@@ -491,6 +491,33 @@ on the client rather than teaching the server to send something it already sent 
 
 ---
 
+### QA-14 · major, fixed 2026-09-18 · At 361 runs over 173 tasks, every list on the page was an unpaged wall
+
+**Observed.** The 2026-09-08 pass read 49 runs on one day. After the load and matrix rounds
+(`execution/README.md`, rows "Load test", "Use-case matrix", "Every worker pipeline") the same
+workspace held **361 runs over 173 tasks in the default range**, and the page had nothing that
+scaled with it: Task health rendered 173 rows with no search, no filter and no page break; Failed
+runs rendered 63 rows whose message column was 27 copies of one sentence differing only by job id;
+the builder's grid rendered 173 rows over the "All" row, and its grouped-bar chart drew 173 × 4
+hairlines with six of the 173 labels legible. The Model calls the AI steps had made -- 338 in the
+range, 22% refused -- appeared nowhere.
+
+**Cause.** Every list on the page assumed the fixture it was built against. Nothing was wrong in
+the arithmetic; the page had simply never seen a population.
+
+**Fixed.** `scheduler1` `7c007a4`, `process` `8c3ff9d`. Task health: failing / in flight / healthy
+chips, a search, 25 a page. Failures: a **By reason** card first -- `reasonKey()` strips the job
+id, folds the two server wordings (`Job N failed due to …` and `Job N: …`) and replaces every
+number, so 63 rows read as 5 reasons, each narrowing the paged, searchable list under it. A
+**Model calls** section over the new `aiPrompt.json/usage`. The builder: rows ordered highest
+total first (by date when Day is the row), a search whose "All" row follows the match, 25 a page;
+the chart draws the top 12 rows by total and says how many the grid holds beyond that.
+
+**Still open from this.** The pivot's column-header strips (`columnMix`, `columnHistogram`) still
+describe the whole column while a search narrows the rows under them -- "294 runs" in the header
+over an "All matching" row that says 14. And a run raises one notification each, so the bell
+reads 99+ after a load round; a digest is the obvious next step.
+
 ## Not exercised — read this before calling `reports` done
 
 This pass is a single-role, single-workspace reading pass. What it did **not** cover is larger than
@@ -554,7 +581,9 @@ files of 16.
 
 ## Summary
 
-Thirteen defects were found and, contrary to the phase's own rule, fixed the same day. Six are
+Thirteen defects were found and, contrary to the phase's own rule, fixed the same day; a
+fourteenth (QA-14, the page at volume) was found ten days later once the load rounds had given it a
+population, and fixed the same way. Six are
 **major**: the default range's chart was unreadable (QA-01), the donut printed 56%/44% against a
 real 92%/8% (QA-03), the headline duration figure was 99.4% dispatcher wait (QA-04), the screen had
 no filter of any kind (QA-05), a long range kept the wrong end of the axis (QA-06), and a platform
