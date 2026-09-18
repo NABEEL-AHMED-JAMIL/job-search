@@ -10,6 +10,14 @@ All paths below are relative to `/Users/nabeel.amd93/Desktop/Old-School`.
 
 ---
 
+
+> **Superseded 2026-09-18 (V43).** `task_form` is now `pipeline` and `task_form_field` is
+> `pipeline_field`; `task_form_id`→`pipeline_key` (surrogate; `pipeline_id` remains the public
+> id the worker routes on, and `source_task.pipeline_id` is unchanged), `form_name`→
+> `pipeline_name`, `form_status`→`status`, sequence `task_form_source_seq`→`pipeline_source_seq`,
+> and a new nullable `pipeline.source_task_type_id` names the topic a pipeline publishes on.
+> Migration: `changelog-sets/V43.0-pipelines-under-topics/V43__pipelines_under_topics.sql`.
+
 ## 1. How the schema is managed, and what happens on startup
 
 ### The two mechanisms

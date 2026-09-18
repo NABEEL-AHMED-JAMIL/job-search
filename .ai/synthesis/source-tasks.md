@@ -455,3 +455,15 @@ The new editor offers only Active and Inactive, but `updateSourceTask` still wri
 Deleting through the update path was possible in the old UI, so some tasks may already be in that
 state with live jobs pointing at them -- worth a one-off query to find out before the change lands,
 because after it those rows can no longer be created but the existing ones still need explaining.
+
+---
+
+## 7. Landed since this synthesis (2026-09-18)
+
+**A pipeline belongs to a topic.** `task_form` became `pipeline` (V43) with a required
+`source_task_type_id`; the task editor picks the topic first and offers only that topic's
+pipelines (`pipelinesForTopic` in `features/tasks/edit/task-edit.ts`), clearing a pipeline the
+new topic does not carry; the Source Tasks list filters by topic then pipeline. The
+`Pipeline` picker's catalogue is `pipeline.json/listPipelines` (the whole caller's set, filtered
+client-side by topic) -- `listForTopic` exists server-side for a future server-filtered picker.
+
