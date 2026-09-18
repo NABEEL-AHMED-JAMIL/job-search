@@ -65,3 +65,10 @@ call → that topic's pipeline offered. Backend `PipelineServiceImplTenantIsolat
    rows; there is no per-workspace fetch. With paging (1) and a workspace filter passed to
    the server, picking a workspace becomes one filtered page rather than a client-side filter
    over everything.
+
+## Follow-up, same day — items 1, 2 and 5 done
+
+- **1 / 5.** `pipeline.json/list` pages and filters on the server (`page, limit, q, topic, status, tenantId, onlyMine`); the screen shows one page with the shared pager, the tiles come from a scope-wide summary query, and a platform admin narrows to one workspace with a box — picking a workspace is one filtered page, not a client-side filter over everything. Admin, page 1 of 50: **69 ms · 20 KB** (was 4.1 MB after part 1, 20 MB before).
+- **2.** `setting.json/topics` searches (`q` + `limit`, first 50 by name or Kafka topic: 20 ms · 4 KB), resolves ids, or lists one profile's topics. The Pipelines filter and the pipeline dialog search as the person types (Combobox remote mode); the task editor picks the Kafka connection first (the same ~100 rows as the Kafka rail), then one of its ~100 topics, then the pipeline — option (b), as recommended.
+- **3 / 4** remain as noted: `appSetting` is now read by nothing in the console; the Kafka rail's up-to-three auto-select fetches are waste, not a bug.
+
