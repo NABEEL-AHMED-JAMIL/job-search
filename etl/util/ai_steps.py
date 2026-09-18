@@ -20,6 +20,7 @@
     with its tokens and time, and hands back the text.
 """
 import os
+import time
 import xml.etree.ElementTree as ET
 
 import requests
@@ -38,15 +39,18 @@ class AiStepError(Exception):
     """A step failed and said the run must (on_error="fail")."""
 
 
-def resolve_ai_steps(task_payload_xml, job_id, job_queue_id, callback_token, bucket=None, read_object=None):
+def resolve_ai_steps(task_payload_xml, job_id, job_queue_id, callback_token, bucket=None, read_object=None, audit=None):
     """
         The document with every <ai_step> replaced by its answer as <output>…</output>.
 
         Returns the XML unchanged when there is no step, so every pipeline pays nothing for
         the check. `read_object(bucket, key)` supplies a file's bytes for a var read as a file;
         the default reads through the shared MinIO client, resolved lazily so this module
-        stays importable without the minio package (the tests hand a fake in).
+        stays importable without the minio package (the tests hand a fake in). `audit(line)`
+        receives one line per step for the run's history -- what the server-side step writes
+        for itself -- so a reader of the run's logs sees the same story whichever side ran it.
     """
+    audit = audit or (lambda line: None)
     if not task_payload_xml or "<ai_step" not in task_payload_xml:
         return task_payload_xml
     root = ET.fromstring(task_payload_xml)
@@ -64,14 +68,19 @@ def resolve_ai_steps(task_payload_xml, job_id, job_queue_id, callback_token, buc
         on_error = step.get("on_error") or "fail"
         try:
             variables = _resolve_variables(root, step, bucket, read_object)
-            answer = _run(base_url, job_id, job_queue_id, callback_token, step, variables)
+            started = time.monotonic()
+            answer, run = _run(base_url, job_id, job_queue_id, callback_token, step, variables)
             _set_tag(root, output, answer)
             logger.info("AI step <%s> answered for job %s run %s", output, job_id, job_queue_id)
+            audit("AI step <%s>: answered in the worker in %.1f s (%s in, %s out tokens)." % (
+                output, time.monotonic() - started, run.get("tokensIn", "?"), run.get("tokensOut", "?")))
         except Exception as ex:
             if on_error == "continue":
                 logger.warning("AI step <%s> failed and the pipeline continues with it empty: %s", output, ex)
+                audit("AI step <%s> failed and the pipeline continues with it empty: %s" % (output, ex))
                 _set_tag(root, output, "")
             else:
+                audit("AI step <%s> failed: %s" % (output, ex))
                 raise AiStepError("AI step <%s> failed: %s" % (output, ex)) from ex
         finally:
             root.remove(step)
@@ -133,7 +142,7 @@ def _run(base_url, job_id, job_queue_id, callback_token, step, variables):
     if answer.get("status") != "SUCCESS":
         raise AiStepError(answer.get("message") or "the console could not run the prompt")
     run = answer.get("data") or {}
-    return run.get("output") or ""
+    return run.get("output") or "", run
 
 
 def _set_tag(root, tag, value):

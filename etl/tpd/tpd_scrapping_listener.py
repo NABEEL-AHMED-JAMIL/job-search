@@ -183,7 +183,8 @@ def execute_task(message, payload, job_state_client):
         # ordinary tags, so the parser and the task below know nothing about them.
         payload = dict(payload)
         payload["taskPayload"] = resolve_ai_steps(payload.get("taskPayload"), job_id, job_queue_id,
-                                                  payload.get("callbackToken"))
+                                                  payload.get("callbackToken"),
+                                                  audit=lambda line: job_state_client.job_audit_log(job_id, job_queue_id, line))
         task_payload = extract_task_payload(pipeline_id, payload)
         task_payload["job_id"] = job_id
         task_payload["job_queue_id"] = job_queue_id

@@ -153,7 +153,8 @@ def execute_task(payload: dict):
         # AI steps handed to this worker run first and land in the document as ordinary tags.
         payload = dict(payload)
         payload["taskPayload"] = resolve_ai_steps(payload.get("taskPayload"), job_id, job_queue_id,
-                                                  payload.get("callbackToken"))
+                                                  payload.get("callbackToken"),
+                                                  audit=lambda line: job_state_client.job_audit_log(job_id, job_queue_id, line))
         task_payload = extract_task_payload(payload)
         process_batches(job_id, job_queue_id, task_payload)
         # Before the run is marked done: a reader opening a completed job's logs must not find

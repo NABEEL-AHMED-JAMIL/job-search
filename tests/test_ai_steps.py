@@ -86,6 +86,11 @@ class AiStepsTest(unittest.TestCase):
 
         # The file was read from the task's bucket by the worker, not sent as a key.
         self.assertEqual(reads, [("medaxis", "claims/in/CLM-1.txt")])
+        # The run's history gets the same line a server-side step writes for itself.
+        lines = []
+        resolve_ai_steps(with_bucket, 2425, 5715, "tok", read_object=read_object, audit=lines.append)
+        self.assertEqual(len(lines), 1)
+        self.assertIn("AI step <summary>: answered in the worker", lines[0])
         call = FakeConsole.calls[0]
         self.assertEqual(call["path"], "/aiPrompt.json/run")
         self.assertEqual(call["token"], "cbt_1.5715.secret")
