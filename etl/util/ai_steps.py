@@ -18,7 +18,16 @@
 
     The key never reaches this process: the console holds it, makes the call, records the run
     with its tokens and time, and hands back the text.
+
+    A step whose variable reads `from="object"` runs once per object under the task's
+    <input_folder> in its <bucket> -- the object's contents (as="text") or its key (as="name")
+    -- and each answer is written to <output_folder>/<object basename>.<output tag>.json|txt,
+    the same folders every object-storage pipeline reads and writes. The output tag then holds
+    a small JSON manifest (how many objects, which were written, which failed) rather than one
+    answer. The console records one run per object (tag#key), so a retried run skips the
+    objects already answered.
 """
+import json
 import os
 import time
 import xml.etree.ElementTree as ET
@@ -33,13 +42,16 @@ logger = get_logger(__name__)
 RUN_TIMEOUT = (5, 300)
 # The largest object handed to a prompt as text. Past this the text is cut, and the run says so.
 MAX_FILE_CHARS = 200_000
+# The most objects one step runs over. A folder of thousands is a budget question, not a loop.
+MAX_OBJECTS_PER_STEP = 200
 
 
 class AiStepError(Exception):
     """A step failed and said the run must (on_error="fail")."""
 
 
-def resolve_ai_steps(task_payload_xml, job_id, job_queue_id, callback_token, bucket=None, read_object=None, audit=None):
+def resolve_ai_steps(task_payload_xml, job_id, job_queue_id, callback_token, bucket=None, read_object=None, audit=None,
+                     list_objects=None, write_object=None):
     """
         The document with every <ai_step> replaced by its answer as <output>…</output>.
 
@@ -67,6 +79,11 @@ def resolve_ai_steps(task_payload_xml, job_id, job_queue_id, callback_token, buc
         output = step.get("output")
         on_error = step.get("on_error") or "fail"
         try:
+            if any(var.get("from") == "object" for var in step.findall("var")):
+                manifest = _run_per_object(root, step, base_url, job_id, job_queue_id, callback_token, bucket,
+                                           read_object, list_objects, write_object, audit, on_error)
+                _set_tag(root, output, json.dumps(manifest))
+                continue
             variables = _resolve_variables(root, step, bucket, read_object)
             started = time.monotonic()
             answer, run = _run(base_url, job_id, job_queue_id, callback_token, step, variables)
@@ -87,6 +104,67 @@ def resolve_ai_steps(task_payload_xml, job_id, job_queue_id, callback_token, buc
     return ET.tostring(root, encoding="unicode")
 
 
+def _run_per_object(root, step, base_url, job_id, job_queue_id, callback_token, bucket,
+                    read_object, list_objects, write_object, audit, on_error):
+    """
+        The step once per object under <input_folder>: each answer written to <output_folder>,
+        the manifest of what happened handed back for the output tag. With on_error="fail" the
+        first failure stops the loop and fails the run; with "continue" the object is listed as
+        failed and the rest go on.
+    """
+    output = step.get("output")
+    input_folder = _tag_text_of(root, "input_folder")
+    output_folder = _tag_text_of(root, "output_folder")
+    if not input_folder:
+        raise AiStepError("the task names no <input_folder> for the step to read")
+    lister = list_objects or _default_list_objects
+    reader = read_object or _default_read_object
+    writer = write_object or _default_write_object
+    prefix = input_folder.strip().strip("/") + "/"
+    keys = [k for k in (lister(bucket, prefix) or []) if not k.endswith("/")]
+    if len(keys) > MAX_OBJECTS_PER_STEP:
+        raise AiStepError("%d objects under %s; a step runs over at most %d" % (len(keys), prefix, MAX_OBJECTS_PER_STEP))
+    manifest = {"objects": len(keys), "written": [], "failed": []}
+    audit("AI step <%s>: %d object(s) under %s." % (output, len(keys), prefix))
+    json_mode = None
+    for key in keys:
+        started = time.monotonic()
+        try:
+            variables = _resolve_variables(root, step, bucket, reader, object_key=key)
+            answer, run = _run(base_url, job_id, job_queue_id, callback_token, step, variables, item=key)
+            written = None
+            if output_folder:
+                base = key.rsplit("/", 1)[-1]
+                looks_json = answer.lstrip().startswith("{")
+                written = "%s/%s.%s.%s" % (output_folder.strip().strip("/"), base, output, "json" if looks_json else "txt")
+                writer(bucket, written, answer.encode("utf-8"), "application/json" if looks_json else "text/plain")
+            manifest["written"].append({"object": key, "output": written})
+            audit("AI step <%s>: %s answered in %.1f s (%s in, %s out tokens)%s." % (
+                output, key, time.monotonic() - started, run.get("tokensIn", "?"), run.get("tokensOut", "?"),
+                (" -> " + written) if written else ""))
+        except Exception as ex:
+            manifest["failed"].append({"object": key, "error": str(ex)[:300]})
+            audit("AI step <%s>: %s failed: %s" % (output, key, ex))
+            if on_error != "continue":
+                raise AiStepError("%s failed: %s" % (key, ex)) from ex
+    return manifest
+
+
+def _tag_text_of(root, tag):
+    element = root.find(tag)
+    return (element.text or "").strip() if element is not None else ""
+
+
+def _default_list_objects(bucket, prefix):
+    from etl.util.etl_helpers import DEFAULT_BUCKET, minio
+    return minio().list_objects(bucket or DEFAULT_BUCKET, prefix=prefix, recursive=True)
+
+
+def _default_write_object(bucket, key, data, content_type):
+    from etl.util.etl_helpers import DEFAULT_BUCKET, minio
+    minio().upload_bytes(bucket or DEFAULT_BUCKET, key, data, content_type=content_type)
+
+
 def _console_base_url():
     """The console's API root. ETL_EVENT_URL already names it for the status callbacks."""
     url = (os.getenv("ETL_EVENT_URL") or "").strip().rstrip("/")
@@ -95,11 +173,25 @@ def _console_base_url():
     return url
 
 
-def _resolve_variables(root, step, bucket, read_object):
+def _resolve_variables(root, step, bucket, read_object, object_key=None):
     values = {}
     for var in step.findall("var"):
         name = var.get("name")
         source = var.get("from") or ""
+        if source == "object":
+            # The object this iteration is on: its key, or its contents read from the bucket.
+            if (var.get("as") or "text") == "name":
+                values[name] = object_key or ""
+                continue
+            reader = read_object or _default_read_object
+            data = reader(bucket, object_key) if object_key else None
+            if data is None:
+                raise AiStepError("object %s for {{%s}} could not be read" % (object_key, name))
+            text = data.decode("utf-8", errors="replace") if isinstance(data, (bytes, bytearray)) else str(data)
+            if len(text) > MAX_FILE_CHARS:
+                text = text[:MAX_FILE_CHARS] + "\n[content truncated -- the file continues beyond what's shown here]"
+            values[name] = text
+            continue
         element = root.find(source) if source else None
         text = (element.text or "").strip() if element is not None else ""
         if (var.get("as") or "text") == "file":
@@ -122,7 +214,7 @@ def _default_read_object(bucket, key):
     return minio().get_object_bytes(bucket or DEFAULT_BUCKET, key)
 
 
-def _run(base_url, job_id, job_queue_id, callback_token, step, variables):
+def _run(base_url, job_id, job_queue_id, callback_token, step, variables, item=None):
     """POST /aiPrompt.json/run and hand back the answer text, or raise with the console's reason."""
     body = {
         "jobId": job_id,
@@ -130,6 +222,7 @@ def _run(base_url, job_id, job_queue_id, callback_token, step, variables):
         "promptUuid": step.get("prompt"),
         "version": int(step.get("version") or 0) or None,
         "stepTag": step.get("output"),
+        "item": item,
         "variables": variables,
     }
     headers = {"X-Worker-Token": callback_token} if callback_token else {}

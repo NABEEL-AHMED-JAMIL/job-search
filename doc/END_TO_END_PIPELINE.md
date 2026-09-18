@@ -242,6 +242,14 @@ refusal (`on_error="fail"`) fails the run, or (`continue`) leaves the tag empty.
 knows a model was involved -- the parser sees a tag. The test listener needs the MinIO variables
 for this, which `docker-compose.yml` now passes it.
 
+A step whose variable reads `from="object"` runs **once per object under the task's
+`<input_folder>`** in its `<bucket>` (its contents with `as="text"`, its key with `as="name"`), and
+each answer is written to `<output_folder>/<object basename>.<output tag>.json|txt` -- the same
+folders the object-storage family reads and writes, so an AI summary lands next to the pipeline's
+own outputs. The tag then holds a manifest (`{"objects", "written", "failed"}`); each object is its
+own run on the console (`tag#key`), so a retried run skips the objects already answered. At most
+200 objects per step.
+
 ---
 
 ## 7. Seeding and running the whole chain

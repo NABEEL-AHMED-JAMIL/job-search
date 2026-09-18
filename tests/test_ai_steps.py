@@ -125,6 +125,75 @@ class AiStepsTest(unittest.TestCase):
         self.assertIn("token", str(failed.exception))
 
 
+class PerObjectStepTest(unittest.TestCase):
+    """A step over the task's input folder: one run per object, each answer to the output folder."""
+
+    DOC = (
+        '<pipeline>\n'
+        '  <bucket>medaxis</bucket>\n'
+        '  <input_folder>claims/in</input_folder>\n'
+        '  <output_folder>claims/out</output_folder>\n'
+        '  <ai_step prompt="uuid-9" version="3" output="summary" on_error="continue">\n'
+        '    <var name="claim_id" from="object" as="name"/>\n'
+        '    <var name="document_text" from="object" as="text"/>\n'
+        '  </ai_step>\n'
+        '</pipeline>'
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = HTTPServer(("127.0.0.1", 0), FakeConsole)
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+        os.environ["ETL_EVENT_URL"] = "http://127.0.0.1:%d" % cls.server.server_address[1]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+
+    def test_each_object_is_its_own_run_and_lands_in_the_output_folder(self):
+        FakeConsole.calls = []
+        FakeConsole.code = 200
+        FakeConsole.answer = {"status": "SUCCESS", "message": "ok", "data": {"status": "ok", "output": '{"diagnosis": "x"}', "tokensIn": 10, "tokensOut": 3}}
+        store = {"claims/in/a.txt": b"claim A", "claims/in/b.txt": b"claim B"}
+        written = {}
+        lines = []
+        out = resolve_ai_steps(self.DOC, 1, 2, "tok",
+                               list_objects=lambda bucket, prefix: [k for k in store if k.startswith(prefix)],
+                               read_object=lambda bucket, key: store[key],
+                               write_object=lambda bucket, key, data, ct: written.__setitem__((bucket, key), (data, ct)),
+                               audit=lines.append)
+        # One console call per object, each keyed on the object, each with that object's text.
+        self.assertEqual([c["body"]["item"] for c in FakeConsole.calls], ["claims/in/a.txt", "claims/in/b.txt"])
+        self.assertEqual(FakeConsole.calls[0]["body"]["variables"], {"claim_id": "claims/in/a.txt", "document_text": "claim A"})
+        # Each answer written next to the inputs' output folder, named for its object and the tag.
+        self.assertEqual(sorted(k for _, k in written), ["claims/out/a.txt.summary.json", "claims/out/b.txt.summary.json"])
+        self.assertEqual(written[("medaxis", "claims/out/a.txt.summary.json")], (b'{"diagnosis": "x"}', "application/json"))
+        # The tag holds the manifest, and the instruction is gone.
+        root = ET.fromstring(out)
+        manifest = json.loads(root.find("summary").text)
+        self.assertEqual(manifest["objects"], 2)
+        self.assertEqual([w["output"] for w in manifest["written"]], ["claims/out/a.txt.summary.json", "claims/out/b.txt.summary.json"])
+        self.assertEqual(manifest["failed"], [])
+        self.assertIsNone(root.find("ai_step"))
+        self.assertEqual(len([l for l in lines if "answered" in l]), 2)
+
+    def test_a_failing_object_is_listed_and_the_rest_go_on_when_the_step_continues(self):
+        FakeConsole.calls = []
+        FakeConsole.code = 200
+        FakeConsole.answer = {"status": "ERROR", "message": "Daily token budget reached"}
+        store = {"claims/in/a.txt": b"claim A"}
+        out = resolve_ai_steps(self.DOC, 1, 2, "tok",
+                               list_objects=lambda b, p: list(store), read_object=lambda b, k: store[k],
+                               write_object=lambda *a: None)
+        manifest = json.loads(ET.fromstring(out).find("summary").text)
+        self.assertEqual(manifest["written"], [])
+        self.assertEqual(manifest["failed"][0]["object"], "claims/in/a.txt")
+        self.assertIn("budget", manifest["failed"][0]["error"])
+        strict = self.DOC.replace('on_error="continue"', 'on_error="fail"')
+        with self.assertRaises(AiStepError):
+            resolve_ai_steps(strict, 1, 2, "tok", list_objects=lambda b, p: list(store), read_object=lambda b, k: store[k], write_object=lambda *a: None)
+
+
 class RunTokenTest(unittest.TestCase):
 
     def test_the_runs_own_token_is_sent_and_the_shared_secret_is_only_the_fallback(self):
