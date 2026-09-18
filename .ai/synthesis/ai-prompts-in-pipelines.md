@@ -75,7 +75,8 @@ worker also now echoes the per-run `callbackToken` on every status/log callback.
 ## 5. What is deliberately not there
 
 - A worker step that reads something the *task* produced (the step runs before the task, so it
-  reads the document and the object store, not the task's result).
+  reads the document and the object store, not the task's result). Reading the input folder
+  covers the common case; a post-task step would need the task modules to return their outputs.
 - A full JSON-schema validator: the check is `required` / `properties` keys.
 - A file variable read from a storage connection by the server (a `file` type exists on a
   variable, but a step maps it to a field's text today).

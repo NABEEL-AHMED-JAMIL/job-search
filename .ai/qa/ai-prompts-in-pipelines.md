@@ -38,6 +38,7 @@ each (the 27 scheduled jobs deactivated at the end of the pass); MinIO object
 | 18 | Run logs show an "AI steps" card; job history and prompt runs agree | pass |
 | 19 | Access profile: `ai-prompts` grants Prompts; member without it sees no Assistants | pass (`access-profiles.spec.ts`) |
 | 20 | Scheduler: scheduled jobs with AI steps fire, skip-next skips, deactivate stops | pass (30 jobs, two slots) |
+| 21 | Bucket in, bucket out: a worker step over each object under the task's input folder writes each answer to the output folder, on a real object-storage pipeline | pass (F768939: 5 in → 5 `.summary.json` out + the `.gz` archives) |
 
 ## Findings
 
@@ -51,6 +52,7 @@ each (the 27 scheduled jobs deactivated at the end of the pass); MinIO object
 | AI-6 | low | Worker-run steps left no audit line | fixed, `job-search` `1d5914df` |
 | AI-7 | low | The AI step drawer's "reads field" select lost its saved value on reopen | fixed, `scheduler1` `0ffcf12` |
 | AI-8 | low | Expected refusals logged a full stack on the server | fixed, `process` `0f27b52` |
+| AI-12 | high | `<ai_step>` for a per-object step was emitted with no `<var>` children (built, never appended), so the worker had nothing to loop over | fixed, `process` `df29b4a` |
 | AI-9 | observation | One notification per run: 296 in a day of testing; the bell reads 99+ | open — a digest is the obvious change |
 | AI-10 | observation | Server-side steps run one after another inside the dispatch tick (~0.65 s each); ≤2× to gain with a cap of 2 | open, by design for now |
 | AI-11 | observation | The worker's MinIO (`:9000`) and the console's buckets (LocalStack `:4566`) are different stores in this dev setup; a file variable reads the worker's | open — environment |
