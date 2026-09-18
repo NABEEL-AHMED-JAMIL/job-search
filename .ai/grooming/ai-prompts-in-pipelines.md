@@ -85,6 +85,11 @@ a task it renders as a read-only card, not an input; Try it picks a file sample 
 Browser; TENANT_ADMIN writes, TENANT_USER reads; the job history run card shows prompt,
 version, tokens, latency, attempts, output preview, rendered input one click away.
 
+## Status
+
+- **Phase 1 delivered 2026-09-18** -- see `execution/README.md` (row "AI prompts in pipelines -- phase 1"). Differences from the plan: a prompt's states are Active/Inactive (no separate Draft; "Save" leaves it Inactive, "Save & activate" makes it Active); the JSON check is `required`/`properties` keys, not a full JSON-schema validator (no library in the build); the runner appends "Answer with a JSON object only, with these keys: …" so a small model answers in shape; the budget is per connection, checked before the call.
+- Phase 2 not started.
+
 ## Phases
 
 1. V44 tables + migration; Connections screen; Prompts list + editor with Try it; aliases.
