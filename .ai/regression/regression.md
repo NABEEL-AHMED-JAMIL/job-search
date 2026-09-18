@@ -22,6 +22,14 @@ A count that has gone **down** without a deletion you intended is a regression i
 > The E2E and Kafka-matrix suites were **not** re-run that day; their expected counts are carried
 > forward unverified.
 
+> **Re-confirmed 2026-09-17: backend 1517 (`mvn -o test`, 0 failures after the
+> `AvatarBucketPropertyTest` fix), frontend 1583 (74 files).** The four `AvatarBucketPropertyTest`
+> errors that had been carried since 2026-09-16 were a private `@Configuration` CGLIB could not
+> proxy -- one word, fixed in `889a09c`. Access profiles, per-run callback tokens and the report
+> outcome columns added the rest. E2E and Kafka-matrix counts still carried forward unverified;
+> Playwright's 42 known failures (missing `etl-bucket`/`analytics-samples/orders.csv` fixture and
+> unseeded dashboards) are pre-existing and unrelated.
+
 > Later the same day, Analytics Studio phase one took the backend from 587 to **607**: twenty new
 > tests, `DatasetResolverTest` (13) and `DuckDbLockdownTest` (7). The frontend figure is unchanged
 > at 580 and that is **not** a neutral fact — **no frontend unit test was written for the Studio
@@ -49,6 +57,9 @@ Taken from the dependency graph in [../discovery/features.md](../discovery/featu
 | `shared/charts/bar-chart.ts` | Every bar chart, at a **narrow** container and at a container that starts hidden. Label thinning is decided from the measured pixel width, not the bar count |
 | `core/api/list-limit.ts` | The Tasks list and the job editor's task dropdown. Both send `LIST_LIMIT` because `PagingUtil` defaults an absent limit to ten; a change here silently shortens both lists |
 | The auth interceptor or guard | Every route, plus the token-refresh path under parallel 401s |
+| `PageKey`, `PageAccessInterceptor`, `PageAccessServiceImpl.resolve`, or `app.routes.ts` `data.pageKey` | **`page-access-profiles` as a tenant user with a restrictive profile**: the menu, a direct link to a withheld page, and the API behind it (must be 403). Adding a route without a `pageKey` makes it open to everyone; adding one with a key that is not in `PageKey` makes it closed to everyone |
+| `RunCallbackTokens`, `NotifyResetApi`, `ProducerBulkEngine.getSourceJobDetail`, `job_queue` columns | **A real dispatch and a real callback** -- `curl` the three endpoints with the token from the Kafka message, then with it again after `Completed` (must be 401), then a UI cancel followed by that run's token (must be 401). The unit tests mock the repository; only a live run proves the row round-trips |
+| `QueryService.runReportRows` | `reports` with a skipped run in range (make one with *Skip next run* on an Auto job): it must count in Runs, appear in the Skipped column and the donut |
 
 ## Feature checklist
 
@@ -57,8 +68,10 @@ Each line is a smoke test: the feature's main path still works, as the role that
 ### Foundation
 
 - [ ] **authentication-and-access** — sign in; a bad password is refused; the token refreshes rather than logging you out; `mustChangePassword` pins the session to `/profile`; an unauthorised route lands on `/unauthorized`
-- [ ] **tenants-and-users** — list, create, edit, deactivate a user; reset a password; a tenant admin sees only its own tenant's users; a platform admin sees all; on `/admin/tenants` the pipeline count appears under Tasks only when it differs from the task count
+- [ ] **tenants-and-users** — the tenant code chip copies and ticks; the Admin column names the first tenant admin (Default shows —); email and phone copy from the **table** as well as the cards; a phone saves from the dialog, the tenant-admin API and `/profile`, always in E.164; list, create, edit, deactivate a user; reset a password; a tenant admin sees only its own tenant's users; a platform admin sees all; on `/admin/tenants` the pipeline count appears under Tasks only when it differs from the task count
 - [ ] **workspace-requests** — submit a request from the public page; approve one; reject one
+- [ ] **page-access-profiles** — as a tenant admin: create a profile, make it default, assign it, tick a per-person exception in the grid and reset it; as that tenant user: the withheld page is gone from the menu, its URL lands on Unauthorized, "Request access" notifies the admin, and its API group answers 403; as a platform admin: pick a workspace first, and the Tenants row menu's "Access profiles" lands on that workspace's grid with the picker showing its name
+- [ ] **worker-callback-tokens** — run a job; the `job_queue` row gets a hash and expiry at dispatch (not at Run); the token in the Kafka message opens `addLogs` / `Running` / `Completed`; afterwards the hash is null and the same token is 401; a run cancelled from the screen refuses its own token
 - [ ] **own-account-and-notifications** — view and edit your profile; change your password; upload an avatar and see it appear; the activity list loads; the bell shows unread and marking read clears it; marking an **already-read** notification still reports success while an unknown id is refused; deactivating an account clears its unread count rather than leaving a Redis key that never expires
 
 ### Configuration
@@ -106,7 +119,7 @@ Each line is a smoke test: the feature's main path still works, as the role that
 - [ ] **query-and-search-engines** — connections, saved queries, execute one, schedules
 - [ ] **content-and-ai-tools** — document converter; audio transcript; text cleaner; AI agents CRUD; Ollama model list; deleting a converter task removes the row and **leaves the converted object in the bucket**, which is what the confirm dialog promises; deleting an id that is not there is refused rather than reported as a success
 - [ ] **job-assistant** — ask a question about a job and get an answer; export the conversation
-- [ ] **reports** — the runs report loads and exports; the Task / Job / Outcome / Owner / Workspace filters move **every** tile, chart, table and the pivot together, not just the table; a chart kind that sums cells (stacked, 100% stacked, donut, pie, radar) is disabled with a stated reason when the measure is not additive, and the choice falls back to Grouped; clicking a day on runs-by-day narrows the range to that day; a run opens its log; the Execution measures are distinct from the queue-wait ones
+- [ ] **reports** — Task health shows Completed / Failed / Interrupted / Skipped / Missed, the Runs tile foot counts "skipped or missed", and a skipped run dated in range appears; the runs report loads and exports; the Task / Job / Outcome / Owner / Workspace filters move **every** tile, chart, table and the pivot together, not just the table; a chart kind that sums cells (stacked, 100% stacked, donut, pie, radar) is disabled with a stated reason when the measure is not additive, and the choice falls back to Grouped; clicking a day on runs-by-day narrows the range to that day; a run opens its log; the Execution measures are distinct from the queue-wait ones
 
 > `dynamic-forms` was removed whole on 2026-09-03 — feature, route, screens, controller, service,
 > entities. `/settings/dynamic-forms` now redirects to the app root via the wildcard route, which

@@ -92,6 +92,17 @@ This is a register, not a work plan. Discovery does not change code — an entry
 
 ---
 
+> **2026-09-17 — `WORKER_CALLBACK_TOKEN` is no longer a standing credential.** Worker callbacks
+> are proved by a token minted per run (`process/security/RunCallbackTokens.java`, schema V42);
+> the shared secret is honoured only for a run dispatched before V42 and only while the variable
+> is set, and the application no longer refuses to start without it (`NotifyResetApi` has no
+> `@PostConstruct` any more). The exposure in P0 §1 is therefore narrowed on that one key: a
+> leaked value opens nothing dispatched after 2026-09-17. It is **not** retired -- the value is
+> still in the pushed history and still opens any pre-V42 run -- and the P0 §1 remedy stands.
+> `MAIL_PASSWORD` in the same file is now a dead key: SMTP was removed on 2026-09-16 (SES is the
+> only transport), so nothing reads it; the exposure of the value itself is unchanged.
+> Backend detail: [../grooming/worker-callback-tokens.md](../grooming/worker-callback-tokens.md).
+
 ## P0 — Act on these regardless of the feature plan
 
 ### 1. Live credentials are committed and pushed ✔ verified

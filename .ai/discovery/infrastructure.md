@@ -497,6 +497,25 @@ literal value (L43–53, L102–117). That test only reads `application-*.proper
 
 ### 3.2 The application's variables
 
+> **Superseded 2026-09-16/17 on the mail, storage and worker rows.** The table below is the
+> 2026-09-01 inventory; these rows have moved since and the table has **not** been rewritten,
+> so read them with this note:
+>
+> | Then | Now |
+> |---|---|
+> | `MAIL_TRANSPORT`, `MAIL_HOST`, `MAIL_PORT`, `MAIL_USERNAME`, `MAIL_PASSWORD`, `spring.mail.*`, `SmtpMailSender` | **Deleted** (`process` `5d0c9d4`). SES is the only transport; `MAIL_FROM` remains |
+> | `AWS_SES_ENDPOINT`, `AWS_SES_REGION`, `AWS_SES_ACCESS_KEY`, `AWS_SES_SECRET_KEY` | **Replaced by one identity**: `AWS_ENDPOINT` (blank on a real deployment; `http://host.docker.internal:4566` locally, `docker-compose.yml:152`), `AWS_REGION` (L153), `AWS_ACCESS_KEY` / `AWS_SECRET_KEY` (L154–155, **S**) → `aws.*` (`application-dev.properties:29–32`). SES and the platform buckets both sign with it |
+> | `MINIO_ENDPOINT/ACCESS_KEY/SECRET_KEY`, `AWS_S3_*`, `AZURE_STORAGE_CONNECTION_STRING`, `AzureBlobConfig` | **Deleted.** MinIO and Azure are per-connection providers with their own keys in `storage_connection`; the process has no global account for either |
+> | (no platform bucket variables) | `AVATAR_BUCKET` → `app.avatar.bucket` (default `etl-avatar`, `application-dev.properties:124`) and `CONFIG_BUCKET` → `app.config.bucket` (default `etl-config`, L127), on S3 under the `aws.*` identity, seeded as storage connections by `StorageConnectionBootstrap`. `etl-bucket` no longer exists |
+> | `WORKER_CALLBACK_TOKEN` -- required, app refuses to start | **Optional legacy fallback** (`worker.callback.token`, L108), honoured only for a run dispatched before V42. New: `WORKER_CALLBACK_BUDGET_HOURS` → `worker.callback.budget-hours` (default 24, L111; compose L178) -- how long a per-run token stays good after dispatch. See [../grooming/worker-callback-tokens.md](../grooming/worker-callback-tokens.md) |
+>
+> §1.3's "MinIO" hop for `process_app` is likewise historical: the platform's own buckets are on
+> **LocalStack S3 (4566)** now; MinIO on 9000 still runs for the `job-search` project and for any
+> tenant that adds it as a connection. §2.5 (SES against LocalStack) still describes the path,
+> with the variable names above in place of the `AWS_SES_*` set. `.env.example`'s four `MAIL_*`
+> keys are now simply wrong rather than deprecated.
+
+
 Secrets are marked **S**. No value for any of them appears in this document.
 
 | Variable | Property | What it does | Source of the value | S |

@@ -9,6 +9,20 @@ Paths are relative to `/Users/nabeel.amd93/Desktop/Old-School`.
 
 ---
 
+
+> **Superseded 2026-09-17 on two points.** (1) Every mention below of `NotifyResetApi` throwing
+> at `@PostConstruct` when `WORKER_CALLBACK_TOKEN` is unset is out of date: the callbacks are now
+> proved per run by `security/RunCallbackTokens` and the variable is an optional legacy fallback
+> -- see [features.md §3](features.md) and
+> [../grooming/worker-callback-tokens.md](../grooming/worker-callback-tokens.md). (2) The
+> controller count is now 28: `api/PageAccessRestApi.java` (`/pageAccess.json/*`) was added on
+> 2026-09-17 with `security/PageAccessInterceptor` registered in `WebConfig`; see
+> [../grooming/page-access-profiles.md](../grooming/page-access-profiles.md). Also new since
+> this inventory: `security/RunCallbackTokens`, `security/PageAccessCache`,
+> `model/enums/PageKey`, entities `PageAccessProfile` and `UserPageAccess` (30 `@Entity`
+> classes), Liquibase V40–V42. Deleted 2026-09-16: `SmtpMailSender`, `AzureBlobConfig`, the
+> `spring.mail.*` and `minio.*` / `aws.s3.*` properties.
+
 ## 1. Stack, module layout and conventions
 
 ### 1.1 Stack

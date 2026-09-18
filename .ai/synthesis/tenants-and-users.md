@@ -470,3 +470,13 @@ unit tests call services directly -- so they are precisely the ones that catch a
 silently replaced by a method-level annotation, which is the failure this codebase is most exposed to.
 Whatever the answer, it needs deciding by someone who knows what the build infrastructure actually is;
 the plan can only go as far as the profile.
+
+---
+
+## 7. Landed since this synthesis (2026-09-16/17)
+
+- **User creation notifies** the new person, the acting admin and peer admins (`process` `52d094d`); the dead Status picker is gone from the dialog (`scheduler1` `14e8a41`).
+- **Tenants screen** (`7f2d4e7`, `process` `8301a7c`): code as a click-to-copy chip under the name (the Code column is gone); Admin column and card line -- the first active `TENANT_ADMIN`, from `TenantDto.adminName/adminEmail`, chosen oldest-first so a second admin does not move it; "Access profiles" and "Copy code" in the row menu, an Access button on the card; count columns centred.
+- **Users screen** (`b874133` … `3a694a3`, `908aad3`): Access column, card access line, "Filter by access profile", "Page access" row action, profile picker in the dialog; copy buttons on email and phone in the table, matching the cards.
+- **Phone** was reported "not working" on 2026-09-17 and was not: all three save paths (admin dialog, tenant-admin API, `/profile`) store E.164. The confusions are a `tel:` link that is inert on a desktop, and the picker defaulting to US so a local-format number reads as invalid. Recorded in grooming terms rather than changed.
+- The access-profile work itself is its own row now: [page-access-profiles.md](page-access-profiles.md).

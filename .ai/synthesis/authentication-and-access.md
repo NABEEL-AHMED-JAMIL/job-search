@@ -364,3 +364,14 @@ data migration for collisions, and both of those are user-management's.
 **Recommendation:** raise it in `tenants-and-users`, cross-referenced from grooming §12.2, and change
 `AuthServiceImpl` only once the column is guaranteed normalised. Grooming criterion 8 is written to
 fail until then, deliberately, so it stays visible.
+
+---
+
+## Landed since this synthesis (2026-09-17)
+
+Page-level access for tenant users -- `pageKeys` on the login and refresh responses
+(`AuthResponseDto`), `pageGuard` beside `authGuard` (`core/auth/auth.guard.ts:53`), the menu
+filtered by `canOpen`, and `PageAccessInterceptor` on the server -- is its own feature row and
+documents: [../grooming/page-access-profiles.md](../grooming/page-access-profiles.md),
+[page-access-profiles.md](page-access-profiles.md). The role hierarchy is unchanged; profiles
+narrow a `TENANT_USER` only.

@@ -672,3 +672,18 @@ estimated, and **Reports is not the only screen affected** -- `queue.ts:194` and
 equivalent of the Execution measures and no caption saying what they are measuring. Whatever is
 decided, it is not a Reports decision. It belongs in front of whoever owns the engine, with Reports
 named only as the place it became visible.
+
+---
+
+## 7. Landed since this synthesis (2026-09-17)
+
+**Every outcome reaches the report.** `QueryService.runReportRows` filtered `WHERE q.start_time
+IS NOT NULL`; Skip and Missed rows carry `skip_time` and no `start_time`
+(`engine/BulkAction.createJobQueue`), so they were absent by construction and the page said so in
+its own copy ("Skipped and missed runs never start, so they cannot appear here"). The query now
+admits either timestamp and dates the run by `coalesce(start_time, skip_time)` (`process`
+`f79fe33`; pinned by `UserStatisticsQueryTest.skippedAndMissedRunsAreIncluded`). Task health has
+one column per outcome -- `OUTCOME_COLUMNS` in `reports.ts` -- with Interrupt kept apart from
+Failed while still counting as a failure for tone and rate; the Runs tile foot says how many
+never started (`scheduler1` `021b06f`). The login page's preview mock shows the same five
+(`412b59b`). Verified with a real skipped run (job 2424 / run 5714).
