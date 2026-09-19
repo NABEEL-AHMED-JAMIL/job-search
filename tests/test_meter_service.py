@@ -94,7 +94,7 @@ class MeterServiceTest(unittest.TestCase):
         c.post("/v1/events", json={"events": [
             {"tenantId": 2905, "meter": "ai.tokens.in", "quantity": 42100, "occurredAt": day, "dedupeKey": "a"},
             {"tenantId": 2905, "meter": "ai.tokens.out", "quantity": 8200, "occurredAt": day, "dedupeKey": "b"},
-            {"tenantId": 2905, "meter": "storage.bytes.deleted", "quantity": 38.2, "occurredAt": day, "dedupeKey": "c"},
+            {"tenantId": 2905, "meter": "storage.bytes.deleted", "quantity": 38.2 * 1024 ** 3, "occurredAt": day, "dedupeKey": "c"},
             {"tenantId": 2905, "meter": "storage.ops.delete", "quantity": 1204, "occurredAt": day, "dedupeKey": "d"},
             {"tenantId": 2905, "meter": "seats.user_days", "quantity": 14, "occurredAt": "2026-09-17T02:00:00Z", "dedupeKey": "e"},
         ]}, headers=SVC)
@@ -114,7 +114,7 @@ class MeterServiceTest(unittest.TestCase):
 
         # A new card from the 18th reprices that day and leaves the 17th alone.
         r = c.put("/v1/ratecard", json={"effective_from": "2026-09-18", "currency": "USD",
-                                        "items": [{"meter": "storage.bytes.deleted", "unit": "GB", "per": 1, "unit_price": 0.0}]}, headers=SVC)
+                                        "items": [{"meter": "storage.bytes.deleted", "unit": "byte", "per": 1073741824, "unit_price": 0.0}]}, headers=SVC)
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(r.json()["version"], 2)
         by_meter = c.get("/v1/usage", params={"tenantId": 2905, "start": "2026-09-01", "end": "2026-09-30"}, headers=SVC).json()["rows"]

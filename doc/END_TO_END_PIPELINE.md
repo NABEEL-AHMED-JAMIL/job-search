@@ -305,3 +305,35 @@ something a cleanup flag should do on its own.
 `.ai/README.md` records `job-search` as out of scope for the console rewrite phase. The seeder is
 deliberately an exception: it is the only place the *cross-language* contract is exercised end to
 end, and that contract is exactly what breaks silently when either side changes alone.
+
+## 9. Metering — what a run reports it used
+
+Every run reports what it used to the **metering service** (`etl_meter`, `etl/meter`, port 8200),
+and the console's Cost & usage page shows the month priced from it. A pipeline does not have to
+do anything: the listener opens one `Meter` per run (`etl/util/meter.py`) and hands it to the task
+in `task_payload["meter"]`; the `Pipeline` helper's `read_bytes`, `write_bytes`, `list_keys` and
+`delete` go through it, so every get, put and delete — and the bytes each moved, a delete's size
+read *before* it goes — is counted. Worker minutes are added at close. Anything else a task wants
+counted is one call: `p.meter.event("ai.tokens.in", 1240, unit="token", subject=("prompt", uuid))`.
+
+**How it reports.** One batch at the end of the run (on failure too), `POST /v1/events`, with the
+run's own callback token and its ids (`X-Worker-Token`, `X-Job-Id`, `X-Job-Queue-Id`). The meter
+asks the console (`/meter.json/verifyRun`) whose run that is and stamps the workspace itself — a
+run cannot report as another tenant. Every event's `dedupeKey` is `{jobQueueId}#{meter}#{seq}`, so a
+replayed batch is all duplicates and the totals do not move.
+
+**When the meter is down.** Three tries, then the batch is spooled to `METER_SPOOL_DIR`
+(`/tmp/etl-meter-spool`) and sent ahead of the next run's batch, under its own run's token. The
+console keeps a finished run's token good for reports for 24 hours (`RunCallbackTokens.retire`),
+so a spooled batch is still provably that run's; a callback on a finished run is refused as before.
+The job completes either way — metering is never a reason for a run to fail.
+
+**Units.** Byte meters carry bytes (`unit="byte"`) and are priced per GB on the rate card; the
+ledger stores `numeric(18,6)`, which would have rounded a 40-byte archive stored as GB to nothing.
+
+**Testing it.** `tests/test_meter_service.py` (the contract, on an in-memory store) and
+`tests/test_meter_client.py` (counting, the batch, the spool, the refusal). The end-to-end run the
+design describes — N files of size S through a compress-and-delete task, `bytes.deleted = N × S`
+and `ops.delete = N` exactly; a replayed batch all duplicates; the meter stopped mid-run and the
+spool arriving with the next run; a delete from the console named on the page — is the
+`meter-e2e-full.py` script recorded in `.ai/execution/README.md`.

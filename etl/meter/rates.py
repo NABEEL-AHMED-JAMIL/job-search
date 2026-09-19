@@ -14,9 +14,11 @@ from decimal import Decimal
 # meter, unit, per, unit_price
 SEED_V1 = [
     ("storage.gb_hours", "GB-hour", 1, "0.000032"),
-    ("storage.bytes.written", "GB", 1, "0.01"),
-    ("storage.bytes.deleted", "GB", 1, "0.01"),
-    ("storage.bytes.read", "GB", 1, "0.0"),
+    # Bytes are carried as bytes and priced per GB: a 40-byte archive stored as 0.000000 GB is
+    # a write that never happened, and numeric(18,6) can hold a terabyte in bytes.
+    ("storage.bytes.written", "byte", 1073741824, "0.01"),
+    ("storage.bytes.deleted", "byte", 1073741824, "0.01"),
+    ("storage.bytes.read", "byte", 1073741824, "0.0"),
     ("storage.ops.read", "op", 1000, "0.004"),
     ("storage.ops.write", "op", 1000, "0.005"),
     ("storage.ops.delete", "op", 1000, "0.005"),

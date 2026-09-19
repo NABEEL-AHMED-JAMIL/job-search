@@ -27,7 +27,6 @@ logger = get_logger(__name__)
 METER_URL = os.getenv("METER_URL", "http://host.docker.internal:8200").rstrip("/")
 SPOOL_DIR = os.getenv("METER_SPOOL_DIR", "/tmp/etl-meter-spool")
 TIMEOUT = float(os.getenv("METER_TIMEOUT_SECONDS", "5"))
-GB = 1024 ** 3
 
 
 class Meter:
@@ -160,14 +159,14 @@ class MeteredStorage:
         data = self.client.get_object_bytes(bucket, key)
         self.meter.event("storage.ops.read", 1, unit="op", subject=("bucket", bucket))
         if data:
-            self.meter.event("storage.bytes.read", len(data) / GB, unit="GB", subject=("bucket", bucket))
+            self.meter.event("storage.bytes.read", len(data), unit="byte", subject=("bucket", bucket))
         return data
 
     def upload_bytes(self, bucket, key, data, content_type="application/octet-stream"):
         ok = self.client.upload_bytes(bucket, key, data, content_type=content_type)
         if ok:
             self.meter.event("storage.ops.write", 1, unit="op", subject=("bucket", bucket))
-            self.meter.event("storage.bytes.written", len(data) / GB, unit="GB", subject=("bucket", bucket))
+            self.meter.event("storage.bytes.written", len(data), unit="byte", subject=("bucket", bucket))
         return ok
 
     def upload_file(self, bucket, key, path, content_type="application/octet-stream"):
@@ -175,7 +174,7 @@ class MeteredStorage:
         if ok:
             self.meter.event("storage.ops.write", 1, unit="op", subject=("bucket", bucket))
             try:
-                self.meter.event("storage.bytes.written", os.path.getsize(path) / GB, unit="GB", subject=("bucket", bucket))
+                self.meter.event("storage.bytes.written", os.path.getsize(path), unit="byte", subject=("bucket", bucket))
             except OSError:
                 pass
         return ok
@@ -195,7 +194,7 @@ class MeteredStorage:
         if ok:
             self.meter.event("storage.ops.delete", 1, unit="op", subject=("bucket", bucket))
             if size:
-                self.meter.event("storage.bytes.deleted", size / GB, unit="GB", subject=("object", f"{bucket}/{key}"))
+                self.meter.event("storage.bytes.deleted", size, unit="byte", subject=("object", f"{bucket}/{key}"))
         return ok
 
     def __getattr__(self, name):

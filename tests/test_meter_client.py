@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 import requests
 
 from etl.util.etl_helpers import Pipeline
-from etl.util.meter import GB, Meter
+from etl.util.meter import Meter
 
 
 class FakeStat:
@@ -116,9 +116,10 @@ class MeterClientTest(unittest.TestCase):
         self.assertEqual(len(by_meter["storage.ops.read"]), 2)                 # the list and the get
         self.assertEqual(len(by_meter["storage.ops.write"]), 1)
         self.assertEqual(len(by_meter["storage.ops.delete"]), 1)               # the missing one is not a delete
-        self.assertAlmostEqual(by_meter["storage.bytes.read"][0]["quantity"], 2048 / GB)
-        self.assertAlmostEqual(by_meter["storage.bytes.written"][0]["quantity"], 512 / GB)
-        self.assertAlmostEqual(by_meter["storage.bytes.deleted"][0]["quantity"], 2048 / GB)
+        self.assertEqual(by_meter["storage.bytes.read"][0]["quantity"], 2048)
+        self.assertEqual(by_meter["storage.bytes.written"][0]["quantity"], 512)
+        self.assertEqual(by_meter["storage.bytes.deleted"][0]["quantity"], 2048)
+        self.assertEqual(by_meter["storage.bytes.deleted"][0]["unit"], "byte")
         self.assertEqual(by_meter["storage.bytes.deleted"][0]["subjectId"], "etl-bucket/claims/in/a.txt")
         self.assertEqual(by_meter["storage.ops.write"][0]["subjectId"], "etl-bucket")
         self.assertEqual(by_meter["pipeline.worker_minutes"][0]["unit"], "minute")
