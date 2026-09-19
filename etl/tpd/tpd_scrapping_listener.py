@@ -15,6 +15,7 @@ from etl.tpd.tpd_kafka_config import create_consumer
 from etl.tpd.offset_tracker import OffsetTracker
 from etl.util.xml_parser import pipeline_xml_parser
 from etl.util.ai_steps import resolve_ai_steps
+from etl.util.meter import Meter
 from etl.util.etl_helpers import job_state
 from etl.util.job_state_client import RunRefused
 from etl.util.job_status import JobStatus
@@ -198,6 +199,10 @@ def execute_task(message, payload, job_state_client):
         task_payload = extract_task_payload(pipeline_id, payload)
         task_payload["job_id"] = job_id
         task_payload["job_queue_id"] = job_queue_id
+        # The run's usage: every object read, written or deleted through the Pipeline helper is
+        # counted, and reported once with the run's token when the meter closes -- on failure too.
+        meter = Meter(job_id, job_queue_id, payload.get("callbackToken"))
+        task_payload["meter"] = meter
         # --------------------------------------------------
         # Pipeline Router
         # --------------------------------------------------
@@ -206,7 +211,8 @@ def execute_task(message, payload, job_state_client):
             raise ValueError(f"Unknown pipeline {pipeline_id}")
         module_name, function_name = route
         task_function = getattr(importlib.import_module(module_name), function_name)
-        task_function(task_payload)
+        with meter:
+            task_function(task_payload)
 
         # Log lines are buffered, so they must be sent before the run is marked done -- a
         # reader opening a completed job's logs must not find the last of them in a buffer.

@@ -11,6 +11,7 @@ from etl.tpd.tpd_kafka_config import create_consumer
 from etl.tpd.offset_tracker import OffsetTracker
 from etl.util.xml_parser import tpd_test_task_payload_parser
 from etl.util.ai_steps import resolve_ai_steps
+from etl.util.meter import Meter
 from etl.util.job_state_client import JobStateClient, RunRefused
 from etl.util.job_status import JobStatus
 from etl.util.logging_config import get_logger
@@ -162,7 +163,9 @@ def execute_task(payload: dict):
                                                   payload.get("callbackToken"),
                                                   audit=lambda line: job_state_client.job_audit_log(job_id, job_queue_id, line))
         task_payload = extract_task_payload(payload)
-        process_batches(job_id, job_queue_id, task_payload)
+        with Meter(job_id, job_queue_id, payload.get("callbackToken")) as meter:
+            task_payload["meter"] = meter
+            process_batches(job_id, job_queue_id, task_payload)
         # Before the run is marked done: a reader opening a completed job's logs must not find
         # the last lines still sitting in a buffer.
         job_state_client.flush_logs(job_id, job_queue_id)
