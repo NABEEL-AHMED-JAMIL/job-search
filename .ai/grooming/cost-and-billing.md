@@ -81,3 +81,33 @@ and the bands. *Invoice* names the card by name and version.
 it more honestly, line by line); a card's currency other than the account's; a "compare two
 versions" view beyond the changed-meter list; deleting a version (never -- an invoice may name
 it).
+
+## The screens, redrawn as rail and pane (19 Sep)
+
+The user asked for the billing pages to follow the Lookups / Kafka Connections pattern, and for
+a QR code on the invoice. Now:
+
+- **Invoices** (`/administration/billing/invoices[/:number]`) -- tiles (overdue, open, slips to
+  verify, drafts or paid), a rail (search, workspace, state; a tone dot per row; period, total,
+  what needs attention, the documents it has) and the invoice in the pane: pills, the number
+  with a copy button, a facts strip (billed to, period, total) with the **QR code of the number**,
+  the primary action for the state (Issue / Record payment or Upload payment slip / PDF) and a
+  dots menu (view and download the PDF, rebuild from the meter, add a line, credit note, void),
+  the inline forms, then Lines, Documents, Payments, History as sections. The address carries
+  the number, so a link lands on the bill; the pane tells the rail when an action changed it.
+- **Billing documents** (`/administration/billing/documents[?document=id]`) -- tiles, a rail by
+  kind and year, and the document read in the pane: a PDF through the console's own pdf.js
+  viewer, an image as itself; Download, open in a tab, open the invoice.
+- **Rate cards** -- the same rail (glyph for default / workspace, state first) and pane (pills,
+  "New version from this", a menu with "A card for one workspace" and "Show the version it was
+  drafted from"); changed meters are marked in the table.
+- **Cost & usage** stays a dashboard (it is read, not picked from), on the four-tile grid the
+  other screens use (its `stat-grid` class had never been defined, so the tiles stacked), with
+  Export CSV and last month's total beside the forecast. **Billing analytics** names every
+  workspace with usage, not only those with an invoice.
+
+**The QR code.** ZXing (`com.google.zxing:core`), error correction M, the number as plain text:
+`InvoiceQr.png(number, size)`. The PDF draws it top right under the issuer (invoices, credit
+notes, receipts -- `BillingPdf.Doc.qrText`); the page fetches `billing.json/invoice/qr?number=`
+as a PNG blob (the same scope rule as the invoice: a tenant admin only their own). Decoded back
+in `InvoiceQrTest` from the PNG and from the rendered PDF page.

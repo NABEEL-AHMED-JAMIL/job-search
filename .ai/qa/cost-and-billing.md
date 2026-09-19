@@ -70,6 +70,24 @@ and shows "at no charge" and the band. Playwright `e2e/rate-cards.spec.ts` (2): 
 a version that is listed with "Changed from vN: Images described" and prices only from next
 month; the tenant admin is off the page and refused the API.
 
+### QA-07 · fixed · The invoice PDF's "Rate card" label ran under a long card name
+**Observed.** `rightPair` put the label at a fixed 130 pt left of the margin; "Seats: 5 free,
+then tiered (run 2) v3" is wider. **Fixed.** The label sits left of the value's measured width.
+
+### QA-08 · fixed · Cost & usage and Billing analytics tiles stacked one per row
+**Observed.** Both used a `stat-grid` class that no stylesheet defines. **Fixed.** The
+`grid grid-cols-2 md:grid-cols-4 gap-3` the other screens use.
+
+### QA-09 · fixed · Billing analytics called workspaces without an invoice "Workspace 2901"
+**Observed.** Names came from the invoiced-tenant rows only. **Fixed.** The workspace list
+names them.
+
+## Redesign run (19 Sep)
+`scratchpad/qr-e2e.py` 4/4 (a fresh invoice's PDF and PNG; Emily scoped to her own; unknown
+number 404); Playwright `e2e/invoices.spec.ts` (deep link, QR image loaded, tenant admin has no
+Issue, rail pick changes the address, the document reads in the pdf.js viewer; the platform head
+drafts), `e2e/billing.spec.ts`, `e2e/rate-cards.spec.ts` -- 5/5. Suites Java 1770, UI 1638.
+
 ## Not exercised
 Transcript minutes (the audio service reports no duration), analytics bytes scanned, a spool
 older than a day, two workers reporting the same run, the nightly cron firing on its own (the
