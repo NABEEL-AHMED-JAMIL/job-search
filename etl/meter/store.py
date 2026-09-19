@@ -9,13 +9,14 @@
 
     Every method takes and returns plain dicts and Decimals; the app does the JSON.
 """
+import json
 import os
 import threading
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
-from etl.meter.rates import SEED_V1, price
+from etl.meter.rates import SEED_V1, price, price_item
 
 EVENT_COLUMNS = ("tenant_id", "meter", "quantity", "unit", "occurred_at", "source", "subject_type",
                  "subject_id", "actor_user_id", "job_queue_id", "dedupe_key", "note", "vouched_by")
@@ -41,29 +42,42 @@ class MemoryStore:
         if self.cards:
             return
         self.cards.append({
-            "version": 1, "effective_from": date(2026, 1, 1), "currency": "USD",
-            "items": [{"meter": m, "unit": u, "per": p, "unit_price": Decimal(up)} for m, u, p, up in SEED_V1],
+            "version": 1, "name": "Standard", "effective_from": date(2026, 1, 1), "currency": "USD", "tenant_id": None,
+            "based_on_version": None, "note": "The seed card from the design", "created_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+            "items": [{"meter": m, "unit": u, "per": p, "unit_price": Decimal(up), "included_quantity": Decimal("0"), "tiers": []} for m, u, p, up in SEED_V1],
         })
+
+    def rate_cards(self):
+        """Every version, newest first, items included."""
+        return sorted(self.cards, key=lambda c: c["version"], reverse=True)
 
     def rate_card(self, version=None):
         if version is None:
-            return self.cards[-1]
+            return self.rate_card_for(date.today(), None)
         for card in self.cards:
             if card["version"] == version:
                 return card
         return None
 
-    def rate_card_for(self, day):
-        current = None
-        for card in sorted(self.cards, key=lambda c: (c["effective_from"], c["version"])):
-            if card["effective_from"] <= day:
-                current = card
-        return current or self.cards[0]
+    def rate_card_for(self, day, tenant_id=None):
+        """The card in effect on a day for a workspace: its own latest effective one, else the default's."""
+        def latest(cards):
+            current = None
+            for card in sorted(cards, key=lambda c: (c["effective_from"], c["version"])):
+                if card["effective_from"] <= day:
+                    current = card
+            return current
+        own = latest([c for c in self.cards if tenant_id is not None and c["tenant_id"] == tenant_id])
+        if own:
+            return own
+        return latest([c for c in self.cards if c["tenant_id"] is None]) or self.cards[0]
 
-    def save_rate_card(self, effective_from, currency, items):
+    def save_rate_card(self, effective_from, currency, items, name=None, tenant_id=None, based_on_version=None, note=None):
         version = max(c["version"] for c in self.cards) + 1
-        card = {"version": version, "effective_from": effective_from, "currency": currency,
-                "items": [dict(i, unit_price=Decimal(str(i["unit_price"]))) for i in items]}
+        card = {"version": version, "name": name or f"v{version}", "effective_from": effective_from, "currency": currency,
+                "tenant_id": tenant_id, "based_on_version": based_on_version, "note": note, "created_at": datetime.now(timezone.utc),
+                "items": [{"meter": i["meter"], "unit": i["unit"], "per": int(i.get("per") or 1), "unit_price": Decimal(str(i["unit_price"])),
+                           "included_quantity": Decimal(str(i.get("included_quantity") or 0)), "tiers": list(i.get("tiers") or [])} for i in items]}
         self.cards.append(card)
         return card
 
@@ -103,8 +117,10 @@ class MemoryStore:
 
     # -- rollup ------------------------------------------------------------
     def rollup(self, tenant_id, day):
-        """Rebuilds one tenant-day from the events, priced with the card current that day."""
-        card = self.rate_card_for(day)
+        """Rebuilds one tenant-day from the events, priced flat with the card in effect at the start of
+        that day's month for that workspace. Allowances and tiers are monthly and applied at the
+        period grouping (see app._priced_period); the daily figure is the before-allowance price."""
+        card = self.rate_card_for(day.replace(day=1), tenant_id)
         items = {i["meter"]: i for i in card["items"]}
         totals = defaultdict(Decimal)
         for e in self.events:
@@ -159,9 +175,16 @@ class PostgresStore:
     create table if not exists meter.rate_card (
         version int primary key, effective_from date not null, currency varchar(3) not null default 'USD',
         created_at timestamptz not null default now());
+    alter table meter.rate_card add column if not exists name varchar(120);
+    alter table meter.rate_card add column if not exists tenant_id bigint;
+    alter table meter.rate_card add column if not exists based_on_version int;
+    alter table meter.rate_card add column if not exists note varchar(400);
     create table if not exists meter.rate_card_item (
         version int not null references meter.rate_card(version), meter varchar(64) not null, unit varchar(24) not null,
         per int not null default 1, unit_price numeric(18,8) not null, primary key (version, meter));
+    alter table meter.rate_card_item add column if not exists included_quantity numeric(18,6) not null default 0;
+    alter table meter.rate_card_item add column if not exists tiers text;
+    update meter.rate_card set name = 'Standard' where name is null;
     create table if not exists meter.usage_event (
         event_id bigserial primary key, tenant_id bigint not null, meter varchar(64) not null,
         quantity numeric(18,6) not null, unit varchar(24) not null, occurred_at timestamptz not null,
@@ -201,37 +224,51 @@ class PostgresStore:
                                         [(1, m, u, p, Decimal(up)) for m, u, p, up in SEED_V1])
 
     def _card(self, cur, version):
-        cur.execute("select version, effective_from, currency from meter.rate_card where version = %s", (version,))
+        cur.execute("select version, effective_from, currency, name, tenant_id, based_on_version, note, created_at from meter.rate_card where version = %s", (version,))
         head = cur.fetchone()
         if not head:
             return None
-        cur.execute("select meter, unit, per, unit_price from meter.rate_card_item where version = %s order by meter", (version,))
-        return {"version": head[0], "effective_from": head[1], "currency": head[2],
-                "items": [{"meter": m, "unit": u, "per": p, "unit_price": up} for m, u, p, up in cur.fetchall()]}
+        cur.execute("select meter, unit, per, unit_price, included_quantity, tiers from meter.rate_card_item where version = %s order by meter", (version,))
+        return {"version": head[0], "effective_from": head[1], "currency": head[2], "name": head[3], "tenant_id": head[4],
+                "based_on_version": head[5], "note": head[6], "created_at": head[7],
+                "items": [{"meter": m, "unit": u, "per": p, "unit_price": up, "included_quantity": inc, "tiers": json.loads(t) if t else []}
+                          for m, u, p, up, inc, t in cur.fetchall()]}
+
+    def rate_cards(self):
+        with self._conn() as conn, conn.cursor() as cur:
+            cur.execute("select version from meter.rate_card order by version desc")
+            versions = [r[0] for r in cur.fetchall()]
+            return [self._card(cur, v) for v in versions]
 
     def rate_card(self, version=None):
+        if version is None:
+            return self.rate_card_for(date.today(), None)
         with self._conn() as conn, conn.cursor() as cur:
-            if version is None:
-                cur.execute("select max(version) from meter.rate_card")
-                version = cur.fetchone()[0]
             return self._card(cur, version)
 
-    def rate_card_for(self, day):
+    def rate_card_for(self, day, tenant_id=None):
         with self._conn() as conn, conn.cursor() as cur:
-            cur.execute("select version from meter.rate_card where effective_from <= %s order by effective_from desc, version desc limit 1", (day,))
-            row = cur.fetchone()
+            row = None
+            if tenant_id is not None:
+                cur.execute("select version from meter.rate_card where tenant_id = %s and effective_from <= %s order by effective_from desc, version desc limit 1", (tenant_id, day))
+                row = cur.fetchone()
+            if not row:
+                cur.execute("select version from meter.rate_card where tenant_id is null and effective_from <= %s order by effective_from desc, version desc limit 1", (day,))
+                row = cur.fetchone()
             if not row:
                 cur.execute("select min(version) from meter.rate_card")
                 row = cur.fetchone()
             return self._card(cur, row[0])
 
-    def save_rate_card(self, effective_from, currency, items):
+    def save_rate_card(self, effective_from, currency, items, name=None, tenant_id=None, based_on_version=None, note=None):
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute("select coalesce(max(version), 0) + 1 from meter.rate_card")
             version = cur.fetchone()[0]
-            cur.execute("insert into meter.rate_card (version, effective_from, currency) values (%s, %s, %s)", (version, effective_from, currency))
-            self._extras.execute_values(cur, "insert into meter.rate_card_item (version, meter, unit, per, unit_price) values %s",
-                                        [(version, i["meter"], i["unit"], int(i.get("per", 1)), Decimal(str(i["unit_price"]))) for i in items])
+            cur.execute("insert into meter.rate_card (version, effective_from, currency, name, tenant_id, based_on_version, note) values (%s, %s, %s, %s, %s, %s, %s)",
+                        (version, effective_from, currency, name or f"v{version}", tenant_id, based_on_version, note))
+            self._extras.execute_values(cur, "insert into meter.rate_card_item (version, meter, unit, per, unit_price, included_quantity, tiers) values %s",
+                                        [(version, i["meter"], i["unit"], int(i.get("per") or 1), Decimal(str(i["unit_price"])),
+                                          Decimal(str(i.get("included_quantity") or 0)), json.dumps(i.get("tiers") or [], default=str) if i.get("tiers") else None) for i in items])
             return self._card(cur, version)
 
     # -- events ------------------------------------------------------------
@@ -267,7 +304,7 @@ class PostgresStore:
 
     # -- rollup ------------------------------------------------------------
     def rollup(self, tenant_id, day):
-        card = self.rate_card_for(day)
+        card = self.rate_card_for(day.replace(day=1), tenant_id)
         items = {i["meter"]: i for i in card["items"]}
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute("select meter, sum(quantity) from meter.usage_event where tenant_id = %s and (occurred_at at time zone 'UTC')::date = %s group by meter",

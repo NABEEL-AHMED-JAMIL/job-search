@@ -66,6 +66,40 @@ def price(quantity, per, unit_price):
     return (q * Decimal(str(unit_price)) / Decimal(per)).quantize(Decimal("0.00001"))
 
 
+def price_item(quantity, item):
+    """
+    The calculation an item carries, applied to a period's quantity:
+
+      included_quantity -- the first N units of the period are free (a monthly allowance);
+      tiers             -- graduated: [{"from": 0, "unit_price": p0}, {"from": q1, "unit_price": p1}, ...],
+                           each band priced at its own rate for the units that fall in it;
+                           absent or empty means one flat unit_price.
+
+    Returns (amount, detail) where detail says what was applied, so an invoice line can carry it.
+    """
+    q = Decimal(str(quantity))
+    per = Decimal(item.get("per") or 1)
+    included = Decimal(str(item.get("included_quantity") or 0))
+    billable = max(q - included, Decimal("0"))
+    tiers = item.get("tiers") or []
+    detail = {"included": included, "billable": billable}
+    if not tiers:
+        return (billable * Decimal(str(item["unit_price"])) / per).quantize(Decimal("0.00001")), detail
+    bands = sorted(({"from": Decimal(str(t.get("from") or 0)), "unit_price": Decimal(str(t["unit_price"]))} for t in tiers), key=lambda b: b["from"])
+    if bands[0]["from"] > 0:
+        bands.insert(0, {"from": Decimal("0"), "unit_price": Decimal(str(item["unit_price"]))})
+    amount = Decimal("0")
+    applied = []
+    for i, band in enumerate(bands):
+        upper = bands[i + 1]["from"] if i + 1 < len(bands) else None
+        in_band = max(min(billable, upper) - band["from"], Decimal("0")) if upper is not None else max(billable - band["from"], Decimal("0"))
+        if in_band > 0:
+            amount += in_band * band["unit_price"] / per
+            applied.append({"from": band["from"], "to": upper, "units": in_band, "unit_price": band["unit_price"]})
+    detail["tiers"] = applied
+    return amount.quantize(Decimal("0.00001")), detail
+
+
 def label_of(meter):
     return LABELS.get(meter, (meter, "Other"))[0]
 

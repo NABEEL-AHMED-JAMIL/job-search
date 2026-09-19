@@ -31,7 +31,7 @@ import requests
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from etl.meter.rates import KNOWN_METERS, label_of, service_of
+from etl.meter.rates import KNOWN_METERS, label_of, price_item, service_of
 from etl.meter.store import MemoryStore, PostgresStore
 from etl.util.logging_config import get_logger
 
@@ -68,16 +68,32 @@ class EventBatch(BaseModel):
     events: List[EventIn] = Field(max_length=MAX_BATCH)
 
 
+class Tier(BaseModel):
+    from_: float = Field(default=0, alias="from")
+    unit_price: float
+
+    model_config = {"populate_by_name": True}
+
+
 class RateItem(BaseModel):
     meter: str
     unit: str
     per: int = 1
     unit_price: float
+    included_quantity: float = 0
+    tiers: List[Tier] = []
 
 
 class RateCardIn(BaseModel):
+    """A new version. `tenant_id` makes it that workspace's own card; none is the default for everyone.
+    Items missing from the list are carried over from `based_on_version` (the card being edited), so a
+    change to one price is a one-item request."""
+    name: str = Field(min_length=1, max_length=120)
     effective_from: date
     currency: str = "USD"
+    tenant_id: Optional[int] = None
+    based_on_version: Optional[int] = None
+    note: Optional[str] = None
     items: List[RateItem]
 
 
@@ -196,7 +212,17 @@ def create_app(store=None, verify_run=verify_run_with_console, service_key=None)
         if dirty:
             do_rollup(set(dirty)); dirty.clear()
         rows = store.usage(tenantId, start, end) if tenantId else store.usage_all_tenants(start, end)
-        return {"tenantId": tenantId, "start": start, "end": end, "groupBy": groupBy, "rows": _group(rows, groupBy)}
+        out = {"tenantId": tenantId, "start": start, "end": end, "groupBy": groupBy}
+        if groupBy == "meter" and tenantId:
+            # A period's card is the one in effect at its start for this workspace; allowances and
+            # tiers apply to the period's totals, so the amount here is what the bill will say.
+            card = store.rate_card_for(start.replace(day=1), tenantId)
+            out["rateCard"] = {"version": card["version"], "name": card["name"], "currency": card["currency"],
+                               "tenantSpecific": card.get("tenant_id") is not None, "effectiveFrom": card["effective_from"]}
+            out["rows"] = _priced_period(rows, card)
+        else:
+            out["rows"] = _group(rows, groupBy)
+        return out
 
     @app.get("/v1/usage/subjects")
     def get_subjects(tenantId: int, meter: str, start: date, end: date, limit: int = 50, who: Caller = Depends(reader)):
@@ -210,25 +236,47 @@ def create_app(store=None, verify_run=verify_run_with_console, service_key=None)
         total, rows = store.list_events(tenantId, meter, start, end, subjectType, limit=limit, offset=(max(page, 1) - 1) * limit)
         return {"total": total, "page": page, "limit": limit, "rows": rows}
 
+    @app.get("/v1/ratecards")
+    def list_ratecards(who: Caller = Depends(reader)):
+        cards = store.rate_cards()
+        for card in cards:
+            _label_items(card)
+        return {"cards": cards}
+
     @app.get("/v1/ratecard")
-    def get_ratecard(version: Optional[int] = None, who: Caller = Depends(reader)):
-        card = store.rate_card(version)
+    def get_ratecard(version: Optional[int] = None, tenantId: Optional[int] = None, day: Optional[date] = None, who: Caller = Depends(reader)):
+        """One version by number, or the card in effect for a workspace on a day (today by default)."""
+        card = store.rate_card(version) if version else store.rate_card_for(day or date.today(), tenantId)
         if not card:
             raise HTTPException(status_code=404, detail="No such rate card version.")
-        for item in card["items"]:
-            item["label"] = label_of(item["meter"]); item["service"] = service_of(item["meter"])
-        return card
+        return _label_items(card)
 
     @app.put("/v1/ratecard")
     def put_ratecard(card: RateCardIn, who: Caller = Depends(reader)):
         unknown = [i.meter for i in card.items if i.meter not in KNOWN_METERS]
         if unknown:
             raise HTTPException(status_code=400, detail=f"Unknown meter(s): {', '.join(unknown)}")
-        saved = store.save_rate_card(card.effective_from, card.currency, [i.model_dump() for i in card.items])
-        # Prices changed from that date: every day from it forward is stale until rolled again.
-        for tenant_id, day in store.days_with_events(datetime.combine(card.effective_from, datetime.min.time(), tzinfo=timezone.utc)):
-            dirty.add((tenant_id, day))
-        return saved
+        for i in card.items:
+            if i.unit_price < 0 or i.included_quantity < 0 or i.per < 1 or any(t.unit_price < 0 or t.from_ < 0 for t in i.tiers):
+                raise HTTPException(status_code=400, detail=f"{i.meter}: prices, allowances and tier starts cannot be negative.")
+        # Start from the card being edited, so one changed price is a one-item request.
+        items = {}
+        base = store.rate_card(card.based_on_version) if card.based_on_version else None
+        if base:
+            for i in base["items"]:
+                items[i["meter"]] = dict(i)
+        for i in card.items:
+            items[i.meter] = {"meter": i.meter, "unit": i.unit, "per": i.per, "unit_price": i.unit_price,
+                              "included_quantity": i.included_quantity, "tiers": [{"from": t.from_, "unit_price": t.unit_price} for t in i.tiers]}
+        saved = store.save_rate_card(card.effective_from, card.currency, list(items.values()), name=card.name,
+                                     tenant_id=card.tenant_id, based_on_version=card.based_on_version, note=card.note)
+        # Prices changed from that date for whoever this card covers: their days from it are stale
+        # until rolled again. Issued invoices are frozen on the console side and do not move.
+        since = datetime.combine(card.effective_from, datetime.min.time(), tzinfo=timezone.utc)
+        for tenant_id, day in store.days_with_events(since):
+            if card.tenant_id is None or tenant_id == card.tenant_id:
+                dirty.add((tenant_id, day))
+        return _label_items(saved)
 
     @app.post("/v1/rollup")
     def post_rollup(tenantId: Optional[int] = None, day: Optional[date] = None, sinceHours: int = 48, who: Caller = Depends(reader)):
@@ -241,6 +289,36 @@ def create_app(store=None, verify_run=verify_run_with_console, service_key=None)
         return {"rolled": do_rollup(pairs)}
 
     return app
+
+
+def _label_items(card):
+    for item in card["items"]:
+        item["label"] = label_of(item["meter"]); item["service"] = service_of(item["meter"])
+    return card
+
+
+def _priced_period(rows, card):
+    """usage_daily rows of one workspace over one period, summed per meter and priced with the card's
+    per-item calculation: allowance first, then tiers, else the flat price."""
+    items = {i["meter"]: i for i in card["items"]}
+    by = {}
+    for r in rows:
+        entry = by.setdefault(r["meter"], {"meter": r["meter"], "label": label_of(r["meter"]), "service": service_of(r["meter"]),
+                                            "unit": r["unit"], "quantity": Decimal("0"), "days": 0})
+        entry["quantity"] += r["quantity"]; entry["days"] += 1
+    out = []
+    for meter, entry in by.items():
+        item = items.get(meter)
+        if item:
+            amount, detail = price_item(entry["quantity"], item)
+            entry.update({"unit": item["unit"], "per": item["per"], "unitPrice": item["unit_price"], "amount": amount,
+                          "includedQuantity": detail["included"], "billableQuantity": detail["billable"],
+                          "tiers": detail.get("tiers", []), "hasTiers": bool(item.get("tiers"))})
+        else:
+            entry.update({"per": 1, "unitPrice": Decimal("0"), "amount": Decimal("0"), "includedQuantity": Decimal("0"),
+                          "billableQuantity": entry["quantity"], "tiers": [], "hasTiers": False, "unpriced": True})
+        out.append(entry)
+    return sorted(out, key=lambda e: e["amount"], reverse=True)
 
 
 def _group(rows, group_by):

@@ -331,6 +331,16 @@ The job completes either way — metering is never a reason for a run to fail.
 **Units.** Byte meters carry bytes (`unit="byte"`) and are priced per GB on the rate card; the
 ledger stores `numeric(18,6)`, which would have rounded a 40-byte archive stored as GB to nothing.
 
+**The calculation.** Prices live on *rate cards*, versioned and never edited: `PUT /v1/ratecard`
+saves a new version (name, `effective_from`, optional `tenant_id`, optional `based_on_version`
+whose items carry over, and the items to change: `unit_price` per `per` units, a monthly
+`included_quantity`, optional graduated `tiers`). `GET /v1/ratecards` lists every version;
+`GET /v1/ratecard?tenantId=&day=` answers the one that prices a workspace on a day -- its own if
+it has one in effect, else the default. A period is priced with the card in effect on its first
+day, allowance first and then bands, so `/v1/usage?groupBy=meter&tenantId=` returns the period's
+lines with `includedQuantity`, `billableQuantity`, `tiers` and the `rateCard` used; the console
+freezes all of that on the invoice, which is why a later version never changes an old bill.
+
 **Testing it.** `tests/test_meter_service.py` (the contract, on an in-memory store) and
 `tests/test_meter_client.py` (counting, the batch, the spool, the refusal). The end-to-end run the
 design describes — N files of size S through a compress-and-delete task, `bytes.deleted = N × S`
