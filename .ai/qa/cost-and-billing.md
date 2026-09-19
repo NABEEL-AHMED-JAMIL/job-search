@@ -119,6 +119,21 @@ days back from today, quiet days counting as zero; yesterday by date.
 **Observed.** One night measured in a 19-day month showed 46 KB for 879 KB kept. **Fixed.**
 Averaged over the nights the measurer ran, and the foot says how many.
 
+### QA-14 · fixed · The rail's list stopped at 30rem whatever the screen, and did not follow the page
+**Observed.** On Invoices the list was cut at 480 px beside a 1,200 px pane; it scrolled only
+with the pointer over it, and scrolling the page left it behind. Lookups and Kafka had the same
+cap. **Fixed.** The rail sticks under the header, is bounded by the viewport, and its list fills
+what is left (`.lookup-rail` sticky + `align-self: start`, `.lookup-rail-list` flex). Below the
+tablet breakpoint the rail is static with a 16rem list, as before.
+
+### QA-15 · fixed · "View" on an invoice's document left the bill
+**Observed.** The eye button navigated to Billing documents, while everywhere else in the console
+a file is read in a modal. **Fixed.** `DocumentViewDialog` -- the Object Browser's modal chrome
+with the pdf.js viewer, Download and open-in-a-tab -- from the invoice pane's eye and its PDF
+actions; a folder icon still goes to Billing documents. Two dead imports that warned on every
+build (`RouterLink` in AccessProfiles, `Icon` in AiStepPanel) are gone; the invoices page's
+head menu is labelled "Billing actions" so it no longer collides with "More actions".
+
 ## Not exercised
 Transcript minutes (the audio service reports no duration), analytics bytes scanned, a spool
 older than a day, two workers reporting the same run, the nightly cron firing on its own (the
