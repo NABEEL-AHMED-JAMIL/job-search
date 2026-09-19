@@ -1323,3 +1323,116 @@ work required now.
 changes made later the same day; §2.2.3 records what moved. Nothing in this document was taken
 from the plan rather than from the code, except the phase numbering in §2.4 and the suite totals
 in §8.7, both of which are recorded as of the 2026-09-08 build.*
+
+
+---
+
+## 14. The Overview and the redrawn Dashboards (19 Sep 2026)
+
+Asked for: a cleaner, more useful Analytics experience with meaningful charts, following the
+console's own patterns. What changed, and what was deliberately not changed.
+
+### 14.1 The Studio's first tab is an Overview of the data, not a description of the file
+
+`GET analytics.json/overview?connection&path` (`DatasetOverviewService`) answers, in one
+governed round trip, the profile the Profile tab already scans for **plus the charts the columns
+deserve**, decided from the profile rather than guessed:
+
+| Chart | When | How |
+|---|---|---|
+| Rows over time | the first DATE/TIMESTAMP column that is neither constant nor all null | one analysis, COUNT_ROWS by that column at a grain that fits its span (DAY ≤ 62 days, WEEK ≤ a year, MONTH ≤ 5 years, YEAR beyond), sorted by the dimension |
+| Rows by *column* (up to 3) | a VARCHAR/BOOLEAN column with 2..50 distinct values that is not a key and not constant | one analysis, COUNT_ROWS Top-8 with Other, sorted by measure |
+| Spread of *column* (up to 2) | a numeric column that measures something: not a key by the profile's rule, not distinct on ≥ 90 % of rows, not named `…_id/_key/_no/_number`; floating types before integers | the engine's own `distribution` bins |
+| Missing values | any column with a null share above zero | the profile alone -- no query |
+
+Every chart carries the `AnalysisRequest` that produced it, so **Open in Canvas** sets the
+Canvas's dimensions, grain, measure, sort and Top-N and runs it: the reader continues from the
+picture rather than rebuilding it. A chart the engine refuses reports on its own tile; the rest
+draw. The answer is small (≈ 9 KB for 200,000 rows; the charts are aggregates) and kept for the
+session (`AnalyticsService.overview` remembers eight datasets; *Read again* forces a read), and
+the profile it carries is handed to the Studio so the Profile and Quality tabs never scan the
+file a second time.
+
+**Two charts at a time.** Every chart is its own governed DuckDB session over the same object,
+and on a remote CSV the scan is the cost. `DatasetOverviewService.draw` runs them
+`PARALLEL_CHARTS = 2` at a time -- half the engine's ceiling of four, never all of it -- on a
+per-request pool whose threads carry the caller's `TenantContext` (the resolver decides who may
+read a connection from the thread it runs on; a thread with no tenant reads nothing) and drop
+it in `finally`. Results come back in the order they were asked for.
+
+Measured on the deployed stack, server-side, one reader:
+
+| Dataset | Rows × columns | Sequential | Two at a time |
+|---|---:|---:|---:|
+| `sales/in/orders.csv` | 60 × 8 | 1.0 s | ≈ 0.6 s |
+| `analytics-benchmark/sales-10mb.csv` | 150,000 × 6 | 1.9 s | 1.45 s |
+| `sales/scale/orders_200k.csv` | 200,000 × 9 | 2.8 s | 2.1 s |
+| `analytics-samples/orders.csv` | 250,000 × 21 | 8.6 s | 6.7 s |
+
+Less than a halving because the box is CPU-bound on CSV parsing and a Top-N with *Other* scans
+the file twice (its CTE is not materialised). The next step, if it is ever needed, is one
+session that materialises the file once and runs all six statements on it; that needs a
+multi-statement path through `StatementGate` and `RunningQueries` (one permit, one handle, one
+timeout for the batch) and a memory ceiling for the materialised copy, so it is noted, not done.
+
+### 14.2 Dashboards as rail and pane
+
+`/objects/analytics/dashboards` follows Lookups / Kafka / Billing: tiles (dashboards, widgets
+on this board and the datasets they read, ran / failed / last ran, saved work), a rail (search,
+one row per board) and the board in the pane -- pills, name, description, *Run every widget* or
+*Stop*, a menu (add a widget, filter this board, delete). The create form and the add-widget
+form open from buttons rather than sitting on the page permanently; the board filter and its
+explicit *Apply* are unchanged in behaviour.
+
+### 14.3 One tile chrome, one chart renderer
+
+`AnalyticsWidget` (`analytics-widget.ts`) is the chrome every tile wears -- title, one line
+under it, actions slot, refresh, and the seven states (idle, queued, running as a skeleton that
+keeps its height, failed with *Try again*, stopped, empty, ready). `WidgetChart`
+(`widget-chart.ts`) is the one place that turns a `WidgetView` into any of the nineteen kinds;
+the result-to-chart adapters (points, stacks, shares, scatter, pivot series…) moved there out of
+the 3,200-line `Dashboards` class, which now only orchestrates runs. Both the board's tiles and
+the Overview draw through them, so a ranked bar on a board and on the overview cannot disagree.
+The kind picker sits in the tile's foot, compact, with the reasons a kind is inert still on the
+options.
+
+### 14.4 Kept as it was, on purpose -- and one Canvas fix
+The serial run queue and the board filter (their reasons are in the class), the Canvas, SQL,
+Data, Compact, Profile, Quality, Charts and Activity tabs, the widget kinds, the saved
+analysis/query model. A request body that does not parse now says what was wrong in plain words
+(`'COUNT' is not valid for aggregation. Allowed: COUNT_ROWS, …`) instead of Jackson's sentence.
+
+Found by the browser suite at 1280 × 720: the Canvas's sticky controls column (builder, filters,
+drill trail) was taller than the viewport, so its last card -- the trail, with *All rows* -- could
+never be scrolled to while the result beside it was long. It is now capped at the viewport and
+scrolls on its own (`xl:max-h-[calc(100vh-5rem)] xl:overflow-y-auto`), the way the shared rail is.
+
+The dashboards, appearance and workspace specs were brought to the new layout: a board is an
+`option` in the `Dashboards` listbox (not a button), the board filter opens from the board's menu,
+the list is not collapsed on open (the rail stays, marked), and the Studio has nine tabs (Columns
+was merged into Compact before this work; Details became Overview).
+
+### 14.5 The fixtures the browser suites read, and how to get them back
+
+`e2e/analytics-workspace.spec.ts`, `data-grid`, `keyboard`, `accessibility` and the Java
+`MinioAnalyticsIntegrationTest` read `analytics-benchmark/sales-10mb.csv` (150,000 rows, five
+regions of 30,000, amount to 999.99, every customer three times, no nulls) and
+`analytics-samples/orders.csv` (250,000 rows, 21 columns); `dashboards.spec.ts` and
+`appearance.spec.ts` read the five and twenty reports seeded over them. The first clean slate
+took all of it away and nothing could recreate the benchmark pair, so:
+
+- `BenchmarkDataGeneratorIT` (`-Danalytics.generate.benchmark=true`) writes the pair from a
+  deterministic DuckDB relation, like `SampleDataGeneratorIT` (`-Danalytics.generate.sample=true`)
+  writes the orders sample. Both are excluded from the default Failsafe run and only write when
+  asked.
+- The seeders save reports against `-Danalytics.seed.connection` (default `worker-store`, the
+  current alias of the MinIO bucket; it was `etl-bucket`). The four Playwright specs select
+  `E2E_CONNECTION` (same default). An alias nobody has fails every spec at the first select,
+  which looks nothing like what it is.
+
+### 14.6 Not built, and why
+- Charts about the console's own operations (jobs, pipelines, API latency) belong to Reports and
+  the Dashboard, which have them; the Studio is about the reader's data files.
+- Cross-tile board filters across datasets (a condition naming a column another file lacks is a
+  hard refusal -- the one-dataset scope stays).
+- Caching analyses server-side: a tile is never a stored picture, by design.

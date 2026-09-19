@@ -81,6 +81,11 @@ E2E_DATASOURCE_USERNAME=… E2E_DATASOURCE_PASSWORD=… E2E_LOOKUP_ENCRYPTION_KE
   -Danalytics.seed.reports=true -DfailIfNoSpecifiedTests=false
 ```
 
+The reports are saved against `-Danalytics.seed.connection` (default `worker-store`, the
+console's current alias for the MinIO bucket; it was `etl-bucket` when this was written). The
+fixture itself comes back with `BenchmarkDataGeneratorIT` (`-Danalytics.generate.benchmark=true`);
+see `grooming/analytics-studio.md` §14.5.
+
 They are left in place deliberately. To remove them:
 
 ```sql
