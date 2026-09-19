@@ -47,8 +47,31 @@ without RUN_OVER, and only `/meter.json/verifyRun` uses it. Pinned by `RunCallba
 task's -- but the design's test needs a task that deletes, so the run now creates "Meter test
 (archive + delete)" (task 1654, job 2600) with `delete_source = true`. Left in place.
 
+### QA-05 · fixed · A price of 0.045 read as "$0.05"
+**Observed.** The first version saved through the editor set model tokens at 0.045 / 1k and the
+list showed "$0.05 / 1,000 per token" -- the pages chose two decimals for anything at or above a
+cent. **Fixed.** `priceDigits()` in `billing.service.ts`: as many decimals as the price has, two
+at least, six at most; shared by Cost & usage, the invoice page and Rate cards.
+
+### QA-06 · fixed · The invoice API did not carry the card's name
+**Observed.** `rateCardName` was written on the draft but the invoice row left it out, so the
+Phase 4 run's fourth check failed with a KeyError. **Fixed.** `invoiceRow` in `BillingRestApi`.
+
+## Phase 4 run (`scratchpad/ratecards-e2e.py`, 17/17)
+The platform lists versions and Emily cannot; Emily reads the card that prices her workspace
+and gets her own whatever `tenantId` she asks for; a draft names the card that priced it; the
+bill is issued (frozen); a nameless version is refused, Emily's PUT is refused; a new default
+version with one changed item carries the other seventeen over; the issued bill still names the
+old version and total; a new draft is priced with the new version, its seats line carries
+`includedQuantity 5`, `billableQuantity 3`, one band, and the amount follows them; a card of
+CareBridge's own puts CareBridge on it and leaves MedAxis on the default; CareBridge's usage
+names its card as `tenantSpecific`; the list names the workspace; the issued PDF names the card
+and shows "at no charge" and the band. Playwright `e2e/rate-cards.spec.ts` (2): the editor saves
+a version that is listed with "Changed from vN: Images described" and prices only from next
+month; the tenant admin is off the page and refused the API.
+
 ## Not exercised
 Transcript minutes (the audio service reports no duration), analytics bytes scanned, a spool
-older than a day, two workers reporting the same run, a rate-card change from the console (no
-editor until Phase 3), the nightly cron firing on its own (the measurer was run by hand through
-`billing.json/measure`), a platform admin on the page in Playwright (unit-tested only).
+older than a day, two workers reporting the same run, the nightly cron firing on its own (the
+measurer was run by hand through `billing.json/measure`), two tiers on a byte meter, a workspace
+card dated before the default it is drafted from.
