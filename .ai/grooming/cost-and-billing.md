@@ -111,3 +111,18 @@ a QR code on the invoice. Now:
 notes, receipts -- `BillingPdf.Doc.qrText`); the page fetches `billing.json/invoice/qr?number=`
 as a PNG blob (the same scope rule as the invoice: a tenant admin only their own). Decoded back
 in `InvoiceQrTest` from the PNG and from the rendered PDF page.
+
+## Where the bill shows up outside Billing (19 Sep)
+
+`billing.json/summary` -- this month so far (the meter, priced), what is owed and by when, the
+next due invoice, slips waiting, the latest invoice -- own workspace for a tenant admin, every
+workspace for the platform. One component, `BillingBrief` (`features/billing/billing-brief.ts`),
+draws it: on **Your profile** under the avatar card ("Your bill"), on the **Dashboard** as a row
+under the job tiles ("Billing, every workspace" for the platform). Admins only; the API refuses
+anyone else and the card is absent. **Reports › Model calls** adds one line for admins: what the
+range's calls cost from the meter, per token meter, with a link to Cost & usage. (The meter has
+events only since metering started, so its token count can be lower than the report's, which
+reads every prompt run.)
+
+Cost & usage says plainly that the day chart is before monthly allowances and tiers while the
+month's total is after them -- the two differ by design once a card carries an allowance.

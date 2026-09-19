@@ -88,6 +88,37 @@ number 404); Playwright `e2e/invoices.spec.ts` (deep link, QR image loaded, tena
 Issue, rail pick changes the address, the document reads in the pdf.js viewer; the platform head
 drafts), `e2e/billing.spec.ts`, `e2e/rate-cards.spec.ts` -- 5/5. Suites Java 1770, UI 1638.
 
+## Calculation review (19 Sep, second pass)
+Read: `rates.price`, `rates.price_item`, both stores' `rollup` and `rate_card_for`, `app._priced_period`
+and the dirty-day marking on a saved card; `BillingService.total`, `settle`, `creditNote`,
+`verifyPayment`, `analytics`, `statement`; the usage page's forecast, yesterday, seats, storage
+and by-service figures. Rounding is consistent (5 dp on lines, 2 dp on totals, HALF_UP); byte
+meters price per GB with the card's `per`; a period is priced with the card of its first day and
+a mid-month card applies from the next period; a saved card marks the right days stale.
+
+### QA-10 · fixed · A credit note against a partly paid bill could exceed what was owed
+**Observed.** The cap was total minus credits: 100 billed, 80 paid, a 50 credit was accepted,
+applied as a payment, and the bill went "paid" with 30 owed to the customer and no record of it.
+**Fixed.** On an open bill a credit is capped at the balance; on a paid bill it is a refund note
+capped at what was billed and not yet credited, applied to nothing (the bill stays paid, the
+note stands on its own). `aCreditOnAPaidBillIsARefundOwedAndNeverCountsAsCollected`.
+
+### QA-11 · fixed · "Collected" in analytics counted credit notes as money
+**Observed.** Collected was `total - balance` per row: a credit applied to a bill counted as
+collected on the bill, and the note's own negative total counted as negative collected -- 71 %
+"collected" on the analytics page was one credit note. **Fixed.** Collected = verified payments
+that were money (`moneyPaidOn`); a credit note row collects nothing; invoiced stays net of
+credits. The invoice pane now shows *paid* and *credited* as two figures.
+
+### QA-12 · fixed · The forecast paced the month at the last seven *rows*, not the last seven days
+**Observed.** One burst day of $5.16 became a $5.16/day pace and a $59 forecast on a $2.66
+month; "yesterday" was the second-to-last row, whichever day that was. **Fixed.** Seven calendar
+days back from today, quiet days counting as zero; yesterday by date.
+
+### QA-13 · fixed · "Storage kept" averaged over the days elapsed, not the nights measured
+**Observed.** One night measured in a 19-day month showed 46 KB for 879 KB kept. **Fixed.**
+Averaged over the nights the measurer ran, and the foot says how many.
+
 ## Not exercised
 Transcript minutes (the audio service reports no duration), analytics bytes scanned, a spool
 older than a day, two workers reporting the same run, the nightly cron firing on its own (the
