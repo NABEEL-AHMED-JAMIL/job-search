@@ -20,6 +20,7 @@
     Reporting is never in a job's critical path: the client batches, retries and spools; this
     end answers fast and does the rollup in the background.
 """
+import hmac
 import os
 import threading
 import time
@@ -120,6 +121,11 @@ def verify_run_with_console(job_id, job_queue_id, token):
     return int(data["tenantId"])
 
 
+def key_matches(sent, expected):
+    """A constant-time comparison: the time a wrong key takes to be refused says nothing about it."""
+    return bool(expected) and hmac.compare_digest(sent.encode(), expected.encode())
+
+
 def create_app(store=None, verify_run=verify_run_with_console, service_key=None):
     store = store or build_store()
     service_key = SERVICE_KEY if service_key is None else service_key
@@ -131,7 +137,7 @@ def create_app(store=None, verify_run=verify_run_with_console, service_key=None)
     def caller(x_service_key: Optional[str] = Header(default=None), x_worker_token: Optional[str] = Header(default=None),
                x_job_id: Optional[int] = Header(default=None), x_job_queue_id: Optional[int] = Header(default=None)) -> Caller:
         if x_service_key:
-            if not service_key or x_service_key != service_key:
+            if not key_matches(x_service_key, service_key):
                 raise HTTPException(status_code=401, detail="Unknown service key.")
             return Caller("service")
         if x_worker_token:
@@ -143,7 +149,7 @@ def create_app(store=None, verify_run=verify_run_with_console, service_key=None)
 
     def reader(x_service_key: Optional[str] = Header(default=None)) -> Caller:
         # Reads are the console's; a pipeline has no business reading the ledger.
-        if not x_service_key or not service_key or x_service_key != service_key:
+        if not x_service_key or not key_matches(x_service_key, service_key):
             raise HTTPException(status_code=401, detail="Reads need the service key.")
         return Caller("service")
 
