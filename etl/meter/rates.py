@@ -11,14 +11,17 @@
 """
 from decimal import Decimal
 
+# A byte meter is priced per this many bytes: the ``per`` its card items carry.
+BYTES_PER_GB = 1024 ** 3
+
 # meter, unit, per, unit_price
 SEED_V1 = [
     ("storage.gb_hours", "GB-hour", 1, "0.000032"),
     # Bytes are carried as bytes and priced per GB: a 40-byte archive stored as 0.000000 GB is
     # a write that never happened, and numeric(18,6) can hold a terabyte in bytes.
-    ("storage.bytes.written", "byte", 1073741824, "0.01"),
-    ("storage.bytes.deleted", "byte", 1073741824, "0.01"),
-    ("storage.bytes.read", "byte", 1073741824, "0.0"),
+    ("storage.bytes.written", "byte", BYTES_PER_GB, "0.01"),
+    ("storage.bytes.deleted", "byte", BYTES_PER_GB, "0.01"),
+    ("storage.bytes.read", "byte", BYTES_PER_GB, "0.0"),
     ("storage.ops.read", "op", 1000, "0.004"),
     ("storage.ops.write", "op", 1000, "0.005"),
     ("storage.ops.delete", "op", 1000, "0.005"),
