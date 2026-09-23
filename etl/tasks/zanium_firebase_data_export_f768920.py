@@ -24,7 +24,7 @@ import firebase_admin
 from dotenv import load_dotenv
 from firebase_admin import credentials, firestore
 
-from etl.util.job_state_client import JobStateClient
+from etl.util.etl_helpers import job_state
 from etl.util.minio_client import MinioClient
 from etl.util.v4_backend_client import V4BackendClient
 from etl.util.logging_config import get_logger
@@ -41,7 +41,9 @@ logger = get_logger(__name__)
 # ------------------------------------------------------------------------------
 # Dependencies
 # ------------------------------------------------------------------------------
-job_state_client = JobStateClient(etl_event_url)
+# The shared client the listener flushes at the end of a run: lines on a private client were never
+# flushed (MIG-200).
+job_state_client = job_state()
 minio_client = MinioClient()
 v4_backend_client = V4BackendClient()
 

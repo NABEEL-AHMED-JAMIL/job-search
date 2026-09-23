@@ -23,6 +23,9 @@ CALLBACK_TIMEOUT = (5, 30)
 # appear while it runs, not all at once when it finishes.
 LOG_BATCH_SIZE = 25
 LOG_BATCH_MAX_AGE_SECONDS = 5
+# Lines one run may hold while the console is not taking them; beyond this the oldest are let go,
+# and logged in full as they go.
+LOG_BUFFER_MAX = 500
 
 import threading
 import time
@@ -46,6 +49,9 @@ class JobStateClient:
         self.base_url = base_url
         # Buffered log lines per run. Threads share one client, so the buffer is guarded.
         self._log_buffers = defaultdict(list)
+        # After a failed send, when the next size-triggered send may be tried (a down console must
+        # not cost every later log line a timeout); the run's final flush always tries.
+        self._log_retry_after = {}
         self._log_first_seen = {}
         self._log_lock = threading.Lock()
         # The per-run callback token each dispatch carries, keyed by (job_id, job_queue_id).
@@ -63,6 +69,12 @@ class JobStateClient:
     def forget_run_token(self, job_id, job_queue_id):
         with self._token_lock:
             self._run_tokens.pop((job_id, job_queue_id), None)
+        # The run is over. Whatever the console never took is logged in full: the audit trail's last copy.
+        with self._log_lock:
+            left = self._take((job_id, job_queue_id))
+            self._log_retry_after.pop((job_id, job_queue_id), None)
+        for line in left:
+            logger.error("UNDELIVERED audit line for job %s queue %s: %s", job_id, job_queue_id, line)
 
     def run_token(self, job_id, job_queue_id):
         with self._token_lock:
@@ -134,8 +146,14 @@ class JobStateClient:
             self._log_buffers[key].append(message)
             self._log_first_seen.setdefault(key, time.monotonic())
             waited = time.monotonic() - self._log_first_seen[key]
-            if len(self._log_buffers[key]) >= LOG_BATCH_SIZE or waited >= LOG_BATCH_MAX_AGE_SECONDS:
+            backing_off = time.monotonic() < self._log_retry_after.get(key, 0)
+            if not backing_off and (len(self._log_buffers[key]) >= LOG_BATCH_SIZE or waited >= LOG_BATCH_MAX_AGE_SECONDS):
                 due = self._take(key)
+            elif len(self._log_buffers[key]) > LOG_BUFFER_MAX:
+                overflow = self._log_buffers[key][:len(self._log_buffers[key]) - LOG_BUFFER_MAX]
+                del self._log_buffers[key][:len(overflow)]
+                for line in overflow:
+                    logger.error("UNDELIVERED audit line for job %s queue %s (buffer full): %s", job_id, job_queue_id, line)
         if due:
             self._send_log_batch(job_id, job_queue_id, due)
 
@@ -163,9 +181,11 @@ class JobStateClient:
         """
             One request for many lines.
 
-            A failure is logged and the lines are dropped rather than retried. They are audit
-            lines: losing a few is survivable, and retrying inside a worker thread is how the
-            callback path became the bottleneck in the first place.
+            A failure puts the lines back at the front of the run's buffer, in order, and the next
+            send (a later line or the run's final flush) takes them again: no retry loop inside the
+            worker thread, which is how the callback path once became the bottleneck, and no line
+            lost silently (MIG-200). The console refusing the run (401) will not change its mind, so
+            those lines are logged in full and let go.
         """
         url = f"{self.base_url}/addLogsBatch/jobId/{job_id}/jobQueueId/{job_queue_id}"
         try:
@@ -174,9 +194,28 @@ class JobStateClient:
             if response.status_code == 200:
                 logger.info("SUCCESS: %s line(s) for job %s queue %s",
                             len(messages), job_id, job_queue_id)
-            else:
-                logger.error("FAILED: %s line(s) status=%s response=%s",
-                             len(messages), response.status_code, response.text)
+                with self._log_lock:
+                    self._log_retry_after.pop((job_id, job_queue_id), None)
+                return
+            logger.error("FAILED: %s line(s) status=%s response=%s",
+                         len(messages), response.status_code, response.text)
+            if response.status_code == 401:
+                for line in messages:
+                    logger.error("UNDELIVERED audit line for job %s queue %s (refused): %s", job_id, job_queue_id, line)
+                return
         except Exception as ex:
             logger.error("FAILED: %s line(s) for job %s queue %s: %s",
                          len(messages), job_id, job_queue_id, str(ex))
+        self._requeue(job_id, job_queue_id, messages)
+
+    def _requeue(self, job_id, job_queue_id, messages):
+        """Back at the front of the run's buffer, oldest first, within LOG_BUFFER_MAX."""
+        key = (job_id, job_queue_id)
+        with self._log_lock:
+            lines = list(messages) + self._log_buffers.get(key, [])
+            overflow = lines[:max(len(lines) - LOG_BUFFER_MAX, 0)]
+            self._log_buffers[key] = lines[len(overflow):]
+            self._log_first_seen.setdefault(key, time.monotonic())
+            self._log_retry_after[key] = time.monotonic() + LOG_BATCH_MAX_AGE_SECONDS
+        for line in overflow:
+            logger.error("UNDELIVERED audit line for job %s queue %s (buffer full): %s", job_id, job_queue_id, line)

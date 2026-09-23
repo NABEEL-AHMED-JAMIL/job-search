@@ -118,7 +118,7 @@ import torch
 import whisper
 import re
 # job status
-from etl.util.job_state_client import JobStateClient
+from etl.util.etl_helpers import job_state
 from etl.util.minio_client import MinioClient
 from etl.util.logging_config import get_logger
 
@@ -138,7 +138,9 @@ minio_bucket = os.getenv("MINIO_BUCKET_NAME", "etl-bucket")
 # ------------------------------------------------------------------------------
 # Dependencies
 # ------------------------------------------------------------------------------
-job_state_client = JobStateClient(etl_event_url)
+# The shared client the listener flushes at the end of a run: lines on a private client were never
+# flushed (MIG-200).
+job_state_client = job_state()
 minio_client = MinioClient()
 # Audio extensions this pipeline accepts as input.
 AUDIO_EXTENSIONS = (".mp3", ".m4a")

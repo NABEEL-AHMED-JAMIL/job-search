@@ -1,0 +1,114 @@
+{
+  "version": 1,
+  "_comment": "Golden copy of etl.meter.rates.SEED_V1 (MIG-144). unit_price is a string so the exact decimal survives; per is the divisor (1073741824 = one GiB for byte meters). A change to the card must show up as a diff to this file. The Java rewrite reads the same file.",
+  "items": [
+    {
+      "meter": "storage.gb_hours",
+      "unit": "GB-hour",
+      "per": 1,
+      "unit_price": "0.000032"
+    },
+    {
+      "meter": "storage.bytes.written",
+      "unit": "byte",
+      "per": 1073741824,
+      "unit_price": "0.01"
+    },
+    {
+      "meter": "storage.bytes.deleted",
+      "unit": "byte",
+      "per": 1073741824,
+      "unit_price": "0.01"
+    },
+    {
+      "meter": "storage.bytes.read",
+      "unit": "byte",
+      "per": 1073741824,
+      "unit_price": "0.0"
+    },
+    {
+      "meter": "storage.ops.read",
+      "unit": "op",
+      "per": 1000,
+      "unit_price": "0.004"
+    },
+    {
+      "meter": "storage.ops.write",
+      "unit": "op",
+      "per": 1000,
+      "unit_price": "0.005"
+    },
+    {
+      "meter": "storage.ops.delete",
+      "unit": "op",
+      "per": 1000,
+      "unit_price": "0.005"
+    },
+    {
+      "meter": "pipeline.runs",
+      "unit": "run",
+      "per": 1,
+      "unit_price": "0.002"
+    },
+    {
+      "meter": "pipeline.worker_minutes",
+      "unit": "minute",
+      "per": 1,
+      "unit_price": "0.02"
+    },
+    {
+      "meter": "ai.tokens.in",
+      "unit": "token",
+      "per": 1000,
+      "unit_price": "0.05"
+    },
+    {
+      "meter": "ai.tokens.out",
+      "unit": "token",
+      "per": 1000,
+      "unit_price": "0.15"
+    },
+    {
+      "meter": "ai.vision.images",
+      "unit": "image",
+      "per": 1,
+      "unit_price": "0.01"
+    },
+    {
+      "meter": "ai.transcript.minutes",
+      "unit": "minute",
+      "per": 1,
+      "unit_price": "0.006"
+    },
+    {
+      "meter": "analytics.queries",
+      "unit": "query",
+      "per": 1,
+      "unit_price": "0.001"
+    },
+    {
+      "meter": "analytics.gb_scanned",
+      "unit": "GB",
+      "per": 1,
+      "unit_price": "0.005"
+    },
+    {
+      "meter": "convert.documents",
+      "unit": "document",
+      "per": 1,
+      "unit_price": "0.02"
+    },
+    {
+      "meter": "kafka.topic_hours",
+      "unit": "topic-hour",
+      "per": 1,
+      "unit_price": "0.001"
+    },
+    {
+      "meter": "seats.user_days",
+      "unit": "user-day",
+      "per": 1,
+      "unit_price": "0.33"
+    }
+  ]
+}

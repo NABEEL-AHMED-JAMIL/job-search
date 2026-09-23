@@ -1,0 +1,20 @@
+[
+  "ai.tokens.in",
+  "ai.tokens.out",
+  "ai.transcript.minutes",
+  "ai.vision.images",
+  "analytics.gb_scanned",
+  "analytics.queries",
+  "convert.documents",
+  "kafka.topic_hours",
+  "pipeline.runs",
+  "pipeline.worker_minutes",
+  "seats.user_days",
+  "storage.bytes.deleted",
+  "storage.bytes.read",
+  "storage.bytes.written",
+  "storage.gb_hours",
+  "storage.ops.delete",
+  "storage.ops.read",
+  "storage.ops.write"
+]

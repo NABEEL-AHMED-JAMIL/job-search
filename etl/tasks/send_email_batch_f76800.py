@@ -26,7 +26,7 @@ import pandas as pd
 import requests
 from dotenv import load_dotenv
 
-from etl.util.job_state_client import JobStateClient
+from etl.util.etl_helpers import job_state
 from etl.util.minio_client import MinioClient
 from etl.util.logging_config import get_logger
 
@@ -45,7 +45,9 @@ logger = get_logger(__name__)
 # ------------------------------------------------------------------------------
 # Dependencies
 # ------------------------------------------------------------------------------
-job_state_client = JobStateClient(etl_event_url)
+# The shared client the listener flushes at the end of a run: lines on a private client were never
+# flushed (MIG-200).
+job_state_client = job_state()
 minio_client = MinioClient()
 
 TEMPLATE_VAR_PATTERN = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
