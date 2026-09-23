@@ -5,9 +5,9 @@
     Ad-hoc HTTP wrapper around the F768927 noise-reduction + Whisper pipeline
     (etl.tasks.mp3_noise_processing_extract_txt_f768927), for extracting a
     transcript from a single audio file on demand -- outside the Kafka job
-    queue. Reuses that module's already-instantiated MinioClient and its
-    lazy Whisper model singleton, so the model loads once (on first request)
-    and stays resident for the life of this process.
+    queue. Reuses that module's lazy Whisper model singleton, so the model
+    loads once (on first request) and stays resident for the life of this
+    process.
 
     Run with: ./run_audio_extract_service.sh (must stay --workers 1 -- more
     workers would each lazy-load their own separate Whisper model).
@@ -18,13 +18,11 @@ import time
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from pydantic import BaseModel
 
 from etl.service.image_extract import IMAGE_EXTENSIONS, extract_text_from_image
 from etl.tasks.mp3_noise_processing_extract_txt_f768927 import (
     AUDIO_EXTENSIONS,
     ValidationConfig,
-    minio_client,
     process_one_audio_file,
 )
 from etl.util.logging_config import get_logger
@@ -32,12 +30,6 @@ from etl.util.logging_config import get_logger
 logger = get_logger(__name__)
 
 app = FastAPI(title="Audio Extract Service")
-
-
-class BucketExtractRequest(BaseModel):
-    bucket: str
-    key: str
-    timestamps: bool = False
 
 
 def _sentinel_task_payload() -> dict:
@@ -104,23 +96,14 @@ async def extract_upload(file: UploadFile = File(...), timestamps: bool = Form(F
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-@app.post("/extract/bucket")
-def extract_bucket(payload: BucketExtractRequest):
-    file_name = payload.key.rsplit("/", 1)[-1]
-    _validate_extension(file_name)
-    tmp_dir = Path(tempfile.mkdtemp(prefix="adhoc_bucket_"))
-    try:
-        input_path = tmp_dir / file_name
-        if not minio_client.download_file(payload.bucket, payload.key, str(input_path)):
-            raise HTTPException(status_code=404, detail=f"Object not found: {payload.bucket}/{payload.key}")
-        return {"transcript": _run_pipeline(file_name, input_path, payload.timestamps)}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("Bucket extraction failed: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+# There is deliberately no bucket-and-key endpoint here any more.
+#
+# It took a bucket and a key from the caller and fetched them with this worker's own MinIO
+# credentials, which are the platform's -- so anyone who could reach this port could read any
+# object in any bucket, and the console's storage permissions stopped at the JVM boundary. The
+# backend now resolves the object through its own authorisation and streams the bytes to
+# /extract (the multipart endpoint above), so nothing was left calling this and the only thing
+# it still offered was the way around the guard.
 
 
 @app.post("/extract/image")
