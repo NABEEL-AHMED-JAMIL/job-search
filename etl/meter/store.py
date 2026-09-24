@@ -215,17 +215,29 @@ class PostgresStore:
             alter table meter.rate_card_item alter column included_quantity type numeric(24,6);
         end if;
     end $$;
+    -- MIG-88: a card's version from a sequence, never max(version) + 1, which let two saves at once collide.
+    -- Set past every version already there, so a ledger created before the sequence carries on from it.
+    create sequence if not exists meter.rate_card_version_seq owned by meter.rate_card.version;
+    select setval('meter.rate_card_version_seq', greatest(
+        (select coalesce(max(version), 0) from meter.rate_card),
+        (select case when is_called then last_value else last_value - 1 end from meter.rate_card_version_seq)) + 1, false);
     """
 
-    def __init__(self, dsn=None):
+    def __init__(self, dsn=None, apply_ddl=None):
         import psycopg2
         import psycopg2.extras
         self._psycopg2 = psycopg2
         self._extras = psycopg2.extras
         self.dsn = dsn or os.environ["METER_DATABASE_URL"]
         self.lock = threading.Lock()
-        with self._conn() as conn, conn.cursor() as cur:
-            cur.execute(self.DDL)
+        # A ledger in a database of its own is created and widened here. In billing_db the meter schema is
+        # billing-service's Liquibase changelog's (MIG-88, P6), and this service's role may not change it:
+        # METER_APPLY_DDL=false there, and nothing runs.
+        if apply_ddl is None:
+            apply_ddl = os.getenv("METER_APPLY_DDL", "true").strip().lower() != "false"
+        if apply_ddl:
+            with self._conn() as conn, conn.cursor() as cur:
+                cur.execute(self.DDL)
         self.seed_rate_card()
 
     def _conn(self):
@@ -237,9 +249,11 @@ class PostgresStore:
             cur.execute("select count(*) from meter.rate_card")
             if cur.fetchone()[0]:
                 return
-            cur.execute("insert into meter.rate_card (version, effective_from, currency) values (1, %s, 'USD')", (date(2026, 1, 1),))
+            cur.execute("insert into meter.rate_card (version, effective_from, currency) values (nextval('meter.rate_card_version_seq'), %s, 'USD') "
+                        "returning version", (date(2026, 1, 1),))
+            version = cur.fetchone()[0]
             self._extras.execute_values(cur, "insert into meter.rate_card_item (version, meter, unit, per, unit_price) values %s",
-                                        [(1, m, u, p, Decimal(up)) for m, u, p, up in SEED_V1])
+                                        [(version, m, u, p, Decimal(up)) for m, u, p, up in SEED_V1])
 
     def _card(self, cur, version):
         cur.execute("select version, effective_from, currency, name, tenant_id, based_on_version, note, created_at from meter.rate_card where version = %s", (version,))
@@ -280,7 +294,8 @@ class PostgresStore:
 
     def save_rate_card(self, effective_from, currency, items, name=None, tenant_id=None, based_on_version=None, note=None):
         with self._conn() as conn, conn.cursor() as cur:
-            cur.execute("select coalesce(max(version), 0) + 1 from meter.rate_card")
+            # From the sequence (MIG-88): max + 1 let two saves at once take the same version.
+            cur.execute("select nextval('meter.rate_card_version_seq')")
             version = cur.fetchone()[0]
             cur.execute("insert into meter.rate_card (version, effective_from, currency, name, tenant_id, based_on_version, note) values (%s, %s, %s, %s, %s, %s, %s)",
                         (version, effective_from, currency, name or f"v{version}", tenant_id, based_on_version, note))
