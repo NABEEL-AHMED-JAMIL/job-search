@@ -52,8 +52,11 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       ETL_EVENT_URL: http://host.docker.internal:9098/api/v1
-      METER_DATABASE_URL: ${METER_DATABASE_URL:?set METER_DATABASE_URL in .env (postgresql://user:pw@host.docker.internal:5433/etl_job)}
+      METER_DATABASE_URL: ${METER_DATABASE_URL:?set METER_DATABASE_URL in .env (postgresql://meter_app:<password>@host.docker.internal:5433/billing_db)}
       METER_SERVICE_KEY: ${METER_SERVICE_KEY:?set METER_SERVICE_KEY in .env}
+      # The meter schema lives in billing_db under billing-service's Liquibase changelog (MIG-88, P6):
+      # this service's role (meter_app) runs no DDL there. true only for a ledger in a database of its own.
+      METER_APPLY_DDL: ${METER_APPLY_DDL:-false}
       METER_ROLLUP_SECONDS: "15"
     command: ["uvicorn", "etl.meter.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8200", "--workers", "1"]
     healthcheck:
