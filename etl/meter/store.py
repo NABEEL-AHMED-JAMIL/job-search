@@ -182,21 +182,39 @@ class PostgresStore:
     create table if not exists meter.rate_card_item (
         version int not null references meter.rate_card(version), meter varchar(64) not null, unit varchar(24) not null,
         per int not null default 1, unit_price numeric(18,8) not null, primary key (version, meter));
-    alter table meter.rate_card_item add column if not exists included_quantity numeric(18,6) not null default 0;
+    alter table meter.rate_card_item add column if not exists included_quantity numeric(24,6) not null default 0;
     alter table meter.rate_card_item add column if not exists tiers text;
     update meter.rate_card set name = 'Standard' where name is null;
     create table if not exists meter.usage_event (
         event_id bigserial primary key, tenant_id bigint not null, meter varchar(64) not null,
-        quantity numeric(18,6) not null, unit varchar(24) not null, occurred_at timestamptz not null,
+        quantity numeric(24,6) not null, unit varchar(24) not null, occurred_at timestamptz not null,
         source varchar(24) not null, subject_type varchar(32), subject_id varchar(512), actor_user_id bigint,
         job_queue_id bigint, dedupe_key varchar(200) not null unique, note varchar(400), vouched_by varchar(24) not null,
         received_at timestamptz not null default now());
     create index if not exists usage_event_tenant_day on meter.usage_event (tenant_id, occurred_at);
     create index if not exists usage_event_meter on meter.usage_event (tenant_id, meter, occurred_at);
     create table if not exists meter.usage_daily (
-        tenant_id bigint not null, day date not null, meter varchar(64) not null, quantity numeric(18,6) not null,
+        tenant_id bigint not null, day date not null, meter varchar(64) not null, quantity numeric(24,6) not null,
         unit varchar(24) not null, per int not null, unit_price numeric(18,8) not null, amount numeric(18,5) not null,
         rate_card_version int not null, rolled_at timestamptz not null default now(), primary key (tenant_id, day, meter));
+    -- MIG-197: one scale for every quantity, the ledger's through to the invoice line's -- six places, and
+    -- 18 digits before the point, because the old 18-digit type stopped a byte meter at about 1 TB (a tenant's
+    -- month of reads passes that). Widening keeps the scale, so no stored value changes.
+    do $$
+    begin
+        if exists (select 1 from information_schema.columns where table_schema = 'meter' and table_name = 'usage_event'
+                   and column_name = 'quantity' and numeric_precision < 24) then
+            alter table meter.usage_event alter column quantity type numeric(24,6);
+        end if;
+        if exists (select 1 from information_schema.columns where table_schema = 'meter' and table_name = 'usage_daily'
+                   and column_name = 'quantity' and numeric_precision < 24) then
+            alter table meter.usage_daily alter column quantity type numeric(24,6);
+        end if;
+        if exists (select 1 from information_schema.columns where table_schema = 'meter' and table_name = 'rate_card_item'
+                   and column_name = 'included_quantity' and numeric_precision < 24) then
+            alter table meter.rate_card_item alter column included_quantity type numeric(24,6);
+        end if;
+    end $$;
     """
 
     def __init__(self, dsn=None):

@@ -20,7 +20,9 @@
     Reporting is never in a job's critical path: the client batches, retries and spools; this
     end answers fast and does the rollup in the background.
 """
+import functools
 import hmac
+import json
 import os
 import threading
 import time
@@ -30,6 +32,9 @@ from typing import List, Optional
 
 import requests
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import Response
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field
 
 from etl.meter.rates import KNOWN_METERS, label_of, price_item, service_of
@@ -41,6 +46,47 @@ logger = get_logger(__name__)
 MAX_BATCH = 500
 CONSOLE_URL = os.getenv("ETL_EVENT_URL", "http://host.docker.internal:9098/api/v1").rstrip("/")
 SERVICE_KEY = (os.getenv("METER_SERVICE_KEY") or "").strip()
+
+
+def exact_json(value):
+    """
+    JSON with every Decimal written as the number it is (MIG-197). FastAPI's own encoder turns a
+    Decimal into a float first, and a float keeps 15 to 17 significant digits, so a quantity at the
+    ledger's full scale lost its last digit before it reached an invoice. Numbers stay numbers --
+    process and the console read them as such -- in plain notation, never an exponent.
+    """
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise ValueError(f"not a number: {value}")
+        return format(value, "f")
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return json.dumps(value, ensure_ascii=False, allow_nan=False)
+    if isinstance(value, (datetime, date)):
+        return json.dumps(value.isoformat())
+    if isinstance(value, dict):
+        return "{" + ",".join(json.dumps(str(k), ensure_ascii=False) + ":" + exact_json(v) for k, v in value.items()) + "}"
+    if isinstance(value, (list, tuple, set)):
+        return "[" + ",".join(exact_json(v) for v in value) + "]"
+    # Anything else (a model, an enum) as FastAPI would have it -- with its Decimals still Decimals.
+    return exact_json(jsonable_encoder(value, custom_encoder={Decimal: lambda d: d}))
+
+
+class ExactJSONResponse(Response):
+    media_type = "application/json"
+
+    def render(self, content):
+        return exact_json(content).encode("utf-8")
+
+
+class ExactRoute(APIRoute):
+    """Every meter route answers through ExactJSONResponse unless it built a Response of its own."""
+
+    def __init__(self, path, endpoint, **kwargs):
+        @functools.wraps(endpoint)
+        def answered(*args, **kw):
+            out = endpoint(*args, **kw)
+            return out if isinstance(out, Response) else ExactJSONResponse(out)
+        super().__init__(path, answered, **kwargs)
 
 
 def build_store():
@@ -130,6 +176,7 @@ def create_app(store=None, verify_run=verify_run_with_console, service_key=None)
     store = store or build_store()
     service_key = SERVICE_KEY if service_key is None else service_key
     app = FastAPI(title="etl-meter", version="1")
+    app.router.route_class = ExactRoute
     app.state.store = store
     rollup_lock = threading.Lock()
     dirty = set()               # (tenant_id, day) touched since the last rollup
