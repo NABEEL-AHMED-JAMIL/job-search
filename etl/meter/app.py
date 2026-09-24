@@ -175,7 +175,8 @@ def key_matches(sent, expected):
 def create_app(store=None, verify_run=verify_run_with_console, service_key=None):
     store = store or build_store()
     service_key = SERVICE_KEY if service_key is None else service_key
-    app = FastAPI(title="etl-meter", version="1")
+    # /health is the only route that answers without a credential (CONTRACT.md): no generated docs.
+    app = FastAPI(title="etl-meter", version="1", docs_url=None, redoc_url=None, openapi_url=None)
     app.router.route_class = ExactRoute
     app.state.store = store
     rollup_lock = threading.Lock()
