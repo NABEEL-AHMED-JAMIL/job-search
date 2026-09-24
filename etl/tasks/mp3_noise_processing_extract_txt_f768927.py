@@ -340,6 +340,7 @@ class TimestampedSegment:
 class AudioTranscriptOutput:
     cleaned_text: str  # the whole transcript merged into one block, as before
     segments: list[TimestampedSegment]  # per-chunk cleaned text with timing, empty-text chunks omitted
+    duration_ms: float = 0.0  # the input audio's own length: what ai.transcript.minutes bills (MIG-104)
 
 # ---------------------------------------------------------------------------
 # Validation function
@@ -1196,6 +1197,8 @@ def process_one_audio_file(task_payload, file_name, input_file_path, file_output
     # 3). Voice Activity Detection (VAD)
     vad_output_path = file_output_folder / "speech" / f"{Path(file_name).stem}_speech.wav"
     result = detect_voice_activity(task_payload, result.output_path, vad_output_path)
+    # The whole input's length, before silence is cut: a transcription bills the audio it was given.
+    audio_duration_ms = result.total_duration_ms
     logger.info(f"{file_name}: speech ratio {result.speech_ratio * 100:.1f}%, {len(result.segments)} segment(s)")
     job_audit_log(task_payload, f"{file_name}: speech ratio {result.speech_ratio * 100:.1f}%, {len(result.segments)} segment(s)")
 
@@ -1264,7 +1267,16 @@ def process_one_audio_file(task_payload, file_name, input_file_path, file_output
         for seg, cleaned in zip(transcription_result.segments, cleanup_result.cleaned_segments)
         if cleaned
     ]
-    return AudioTranscriptOutput(cleaned_text=cleanup_result.cleaned_text, segments=timestamped_segments)
+    return AudioTranscriptOutput(cleaned_text=cleanup_result.cleaned_text, segments=timestamped_segments,
+                                 duration_ms=audio_duration_ms)
+
+
+def meter_transcript(task_payload, file_name, transcript_output):
+    """The minutes of audio this run transcribed, on the run's own meter (MIG-104). A run without one --
+    an ad-hoc caller -- meters where it knows the workspace instead."""
+    meter = task_payload.get("meter")
+    if meter is not None and transcript_output.duration_ms > 0:
+        meter.event("ai.transcript.minutes", transcript_output.duration_ms / 60_000, unit="minute", subject=("object", file_name))
 
 
 def mp3_noise_processing_extract_txt(task_payload):
@@ -1327,6 +1339,8 @@ def mp3_noise_processing_extract_txt(task_payload):
             if transcript_output is None:
                 skipped += 1
                 continue
+            # Billed once the audio is transcribed: the model's work is done whether or not the upload lands.
+            meter_transcript(task_payload, file_name, transcript_output)
 
             object_prefix = "/".join([
                 output_folder,

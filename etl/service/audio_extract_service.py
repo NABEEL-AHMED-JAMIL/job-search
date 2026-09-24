@@ -57,7 +57,8 @@ def _format_timestamp(ms: int) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{millis:03d}"
 
 
-def _run_pipeline(file_name: str, input_path: Path, timestamps: bool = False) -> str:
+def _run_pipeline(file_name: str, input_path: Path, timestamps: bool = False) -> dict:
+    """The transcript, and the audio's length in seconds: the caller meters ai.transcript.minutes (MIG-104)."""
     if input_path.stat().st_size > ValidationConfig.MAX_FILE_SIZE_BYTES:
         raise HTTPException(status_code=400, detail="File too large")
     output_dir = input_path.parent / "output" / input_path.stem
@@ -68,10 +69,10 @@ def _run_pipeline(file_name: str, input_path: Path, timestamps: bool = False) ->
     if transcript_output is None:
         raise HTTPException(status_code=422, detail="Audio failed validation (silent, too short, or unreadable)")
     if not timestamps:
-        return transcript_output.cleaned_text
-    return "\n".join(
-        f"[{_format_timestamp(seg.start_ms)}] {seg.text}" for seg in transcript_output.segments
-    )
+        text = transcript_output.cleaned_text
+    else:
+        text = "\n".join(f"[{_format_timestamp(seg.start_ms)}] {seg.text}" for seg in transcript_output.segments)
+    return {"transcript": text, "durationSeconds": round(transcript_output.duration_ms / 1000, 3)}
 
 
 @app.get("/health")
@@ -86,7 +87,7 @@ async def extract_upload(file: UploadFile = File(...), timestamps: bool = Form(F
     try:
         input_path = tmp_dir / file.filename
         input_path.write_bytes(await file.read())
-        return {"transcript": _run_pipeline(file.filename, input_path, timestamps)}
+        return _run_pipeline(file.filename, input_path, timestamps)
     except HTTPException:
         raise
     except Exception as e:
